@@ -17,14 +17,16 @@ services:
     name: support-web-api
     runtime: python
     rootDir: bot
-    pythonVersion: "3.11"
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     # Render root directory is "bot", so the entry point is CodeX.py (not bot/CodeX.py)
     startCommand: python CodeX.py
     healthCheckPath: /health
     envVars:
+      # MUST be fully qualified (e.g. 3.11.9) — bare "3.11" is ignored by
+      # Render and it falls back to its default (3.14.x), which breaks
+      # discord.py login with "Session is closed".
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: "3.11.9"
       - key: API_ENABLED
         value: "true"
       - key: brand_name
