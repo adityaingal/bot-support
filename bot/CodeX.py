@@ -151,6 +151,26 @@ def _setup_persistent_db() -> None:
 
 _setup_persistent_db()
 
+
+def _warn_python_version() -> None:
+    """Flag untested Python versions early (Render may default to the newest).
+
+    discord.py 2.7.1 + aiohttp are verified on 3.11–3.13. On 3.14+ the Discord
+    login can fail with ``RuntimeError: Session is closed`` on every retry, so
+    surface a clear warning pointing at PYTHON_VERSION instead of a cryptic
+    aiohttp traceback.
+    """
+    v = sys.version_info
+    if v >= (3, 14):
+        log_warning(
+            f"Running on Python {v.major}.{v.minor}.{v.micro}, which is newer than "
+            "the tested range (3.11–3.13). If Discord login fails with "
+            "'Session is closed', set the PYTHON_VERSION env var to 3.11 and redeploy."
+        )
+
+
+_warn_python_version()
+
 log_info("Loading configuration...")
 
 import aiohttp

@@ -23,6 +23,8 @@ services:
     startCommand: python CodeX.py
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
       - key: API_ENABLED
         value: "true"
       - key: brand_name
