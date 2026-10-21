@@ -180,6 +180,7 @@ import weakref
 import discord
 from discord import Spotify
 from discord.ext import commands, tasks
+from discord.utils import MISSING
 
 # aiosqlite runs every query on a dedicated *non-daemon* thread that only
 # stops when the connection is closed. Any connection left open (cogs, API
@@ -815,12 +816,20 @@ async def main():
                     exit_code = 1
                     return
 
-                # discord.py's static_login() creates a brand new aiohttp
-                # session on every call, so each retry would leak the previous
-                # one ("Unclosed client session" in the Render logs). Close it
-                # before waiting; the next attempt creates a fresh one.
+                # aiohttp 3.14+ ClientSession.close() also CLOSES the shared
+                # TCPConnector, and discord.py's static_login() REUSES that
+                # connector for its next session. Left as-is, every retry after
+                # a close() would create a session bound to a closed connector
+                # and die instantly with "RuntimeError: Session is closed".
+                # Close the session (to avoid "Unclosed client session" leaks)
+                # and reset the connector to MISSING so static_login() builds a
+                # fresh TCPConnector(limit=0) on the next attempt.
                 try:
                     await client.http.close()
+                except Exception:
+                    pass
+                try:
+                    client.http.connector = MISSING
                 except Exception:
                     pass
 
