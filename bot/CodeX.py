@@ -152,24 +152,25 @@ def _setup_persistent_db() -> None:
 _setup_persistent_db()
 
 
-def _warn_python_version() -> None:
-    """Flag untested Python versions early (Render may default to the newest).
+def _enforce_python_version() -> None:
+    """Refuse to start on untested Python versions (Render may default newest).
 
     discord.py 2.7.1 + aiohttp are verified on 3.11–3.13. On 3.14+ the Discord
-    login can fail with ``RuntimeError: Session is closed`` on every retry, so
-    surface a clear warning pointing at PYTHON_VERSION instead of a cryptic
-    aiohttp traceback.
+    login fails deterministically with ``RuntimeError: Session is closed`` on
+    every attempt, and retrying only earns a Cloudflare rate-limit. Fail fast
+    with an actionable message instead.
     """
     v = sys.version_info
     if v >= (3, 14):
-        log_warning(
-            f"Running on Python {v.major}.{v.minor}.{v.micro}, which is newer than "
-            "the tested range (3.11–3.13). If Discord login fails with "
-            "'Session is closed', set the PYTHON_VERSION env var to 3.11 and redeploy."
+        log_error(
+            f"Unsupported Python {v.major}.{v.minor}.{v.micro}. discord.py 2.7.1 + aiohttp "
+            "fail login with 'Session is closed' on Python 3.14+. "
+            "Set the PYTHON_VERSION env var to 3.11 and redeploy."
         )
+        raise SystemExit(1)
 
 
-_warn_python_version()
+_enforce_python_version()
 
 log_info("Loading configuration...")
 
