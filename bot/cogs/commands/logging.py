@@ -41,6 +41,20 @@ LOG_CATEGORIES = [
     "system_events",
 ]
 
+# Channel-name slug per category, used by /autolog -> <prefix>-<slug>-log
+# (e.g. embrz-member-log, embrz-message-log, embrz-moderation-log)
+LOG_CATEGORY_SLUG = {
+    "message_events": "message",
+    "join_leave_events": "member",
+    "member_moderation": "moderation",
+    "voice_events": "voice",
+    "channel_events": "channel",
+    "role_events": "role",
+    "emoji_events": "emoji",
+    "reaction_events": "reaction",
+    "system_events": "system",
+}
+
 CONFIG_FILE = "jsondb/logging_config.json"
 LOGS_DIR = "logs"
 MAX_AUDIT_CACHE_SIZE = 1000
@@ -1657,6 +1671,76 @@ class Logging(commands.Cog):
                 "Setup Error", "An error occurred during setup. Please try again."
             )
             await ctx.send(view=embed)
+
+    @commands.hybrid_command(
+        name="autolog",
+        description="Auto-create one log channel per category (e.g. embrz-member-log), "
+                    "delete old *-log channels and enable logging.",
+    )
+    @commands.has_permissions(manage_guild=True, manage_channels=True)
+    @commands.cooldown(1, 60, commands.BucketType.guild)
+    async def autolog(self, ctx: commands.Context, prefix: Optional[str] = None):
+        """One-shot setup: purge old log channels, create <prefix>-<slug>-log per category, enable all."""
+        try:
+            raw = prefix or (ctx.guild.me.display_name if ctx.guild.me else None) \
+                or (self.bot.user.name if self.bot.user else "log")
+            base = re.sub(r"[^a-z0-9]+", "-", str(raw).lower()).strip("-") or "log"
+            slugs = set(LOG_CATEGORY_SLUG.values())
+
+            # 1. Remove old log channels (<slug>-log or *-<slug>-log), never the one we were invoked in
+            deleted: List[str] = []
+            failed_delete: List[str] = []
+            for channel in list(ctx.guild.text_channels):
+                if channel.id == ctx.channel.id:
+                    continue
+                name = channel.name.lower()
+                if any(name == f"{slug}-log" or name.endswith(f"-{slug}-log") for slug in slugs):
+                    try:
+                        await channel.delete(reason="autolog: replacing old log channel")
+                        deleted.append(channel.name)
+                    except discord.HTTPException:
+                        failed_delete.append(channel.name)
+
+            # 2. Create one fresh channel per category
+            created: Dict[str, discord.TextChannel] = {}
+            failed_create: List[str] = []
+            for category in LOG_CATEGORIES:
+                slug = LOG_CATEGORY_SLUG.get(category, category.replace("_", "-"))
+                channel_name = f"{base}-{slug}-log"[:100]
+                try:
+                    created[category] = await ctx.guild.create_text_channel(
+                        channel_name, reason=f"autolog setup by {ctx.author}"
+                    )
+                except discord.HTTPException:
+                    failed_create.append(channel_name)
+
+            # 3. Point every category at its channel and enable it
+            await self._save_log_config(
+                ctx.guild.id,
+                {cat: ch.id for cat, ch in created.items()},
+                {cat: cat in created for cat in LOG_CATEGORIES},
+                [],
+                [],
+                [],
+                None,
+            )
+
+            lines = [f"- #{created[c].name}" for c in LOG_CATEGORIES if c in created]
+            desc = f"**Created {len(created)}/{len(LOG_CATEGORIES)} channels**\n" + "\n".join(lines)
+            if deleted:
+                desc += "\n\n**Deleted old log channels:** " + ", ".join(f"`{n}`" for n in deleted[:15])
+            if failed_create:
+                desc += "\n\n**Could not create (need Manage Channels):** " + ", ".join(f"`{n}`" for n in failed_create)
+            if failed_delete:
+                desc += "\n\n**Could not delete:** " + ", ".join(f"`{n}`" for n in failed_delete[:10])
+            desc += "\n\nRun `/log test` to verify."
+            await ctx.send(view=self._create_modern_embed("Auto Log Setup", desc))
+        except Exception as e:
+            logger.error(f"Error in autolog: {e}")
+            await ctx.send(view=self._create_modern_embed(
+                "Auto Setup Error",
+                "An error occurred. The bot needs **Manage Server** and **Manage Channels**.",
+            ))
 
     @log.command(name="status", description="View the current logging configuration.")
     @commands.has_permissions(manage_guild=True)
