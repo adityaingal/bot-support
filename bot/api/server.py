@@ -146,6 +146,17 @@ def create_app() -> FastAPI:
             },
             "keepalive": keepalive_snapshot(),
         }
+
+        # Startup diagnostics (no secrets): lets you see WHY the bot is not
+        # online from a single GET instead of digging through Render logs.
+        startup = getattr(app.state, "startup", None)
+        if isinstance(startup, dict) and startup.get("phase") not in (None, "init"):
+            payload["discord"]["phase"] = startup.get("phase")
+            for key in ("attempt", "last_error", "next_retry_in"):
+                if startup.get(key) is not None:
+                    payload["discord"][key if key != "next_retry_in" else "next_retry_in_s"] = startup[key]
+            if startup.get("updated"):
+                payload["discord"]["updated"] = startup["updated"]
         if state == "connected" and bot is not None:
             try:
                 payload["guilds"] = len(bot.guilds)

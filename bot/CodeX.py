@@ -240,7 +240,28 @@ LOG_CHANNEL_ID = 1396794297386532978 # Replace with the channel ID for join/leav
 # limit). Fatal errors (bad token, missing intents, failed cog load) exit
 # immediately so the problem stays visible instead of being retried forever.
 MAX_START_ATTEMPTS = 7
+# A 429/Cloudflare block during login lasts far longer than a normal connect
+# failure, and every process restart renews it. For rate limits we do NOT use
+# MAX_START_ATTEMPTS: we stay in this process and escalate the cooldown
+# (120s -> 600s, up to MAX_RATE_LIMIT_WAITS waits ~= 100 minutes) so Render
+# never restarts the service and the block has time to expire.
+MAX_RATE_LIMIT_WAITS = 12
+RATE_LIMIT_BASE_WAIT = 120.0
+RATE_LIMIT_MAX_WAIT = 600.0
 SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
+
+# Live startup state, published on /api/status (one HTTP GET beats digging
+# through Render logs while the bot is not yet online).
+startup_state = {"phase": "init", "attempt": 0, "last_error": None, "next_retry_in": None}
+
+
+def _set_startup(**kwargs) -> None:
+    try:
+        startup_state.update(kwargs)
+        startup_state["updated"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    except Exception:
+        pass
+
 
 client = zyrox()
 tree = client.tree
@@ -338,6 +359,7 @@ async def on_ready():
     log_info(f"Logged in as: {client.user}")
     log_info(f"Connected to {len(client.guilds)} guilds")
     log_info(f"Connected to {len(client.users)} users")
+    _set_startup(phase="ready", last_error=None, next_retry_in=None, attempt=0)
 
     # Sync application emojis on startup (never let this kill on_ready)
     try:
@@ -564,6 +586,7 @@ from api.dependencies import set_bot
 
 fastapi_app = create_app()
 fastapi_app.state.bot = client
+fastapi_app.state.startup = startup_state
 set_bot(client)
 
 API_ENABLED = os.getenv("API_ENABLED", "true").strip().lower() == "true"
@@ -741,7 +764,9 @@ async def main():
             log_info("Connecting to Discord...")
 
             attempt = 0
+            rate_limit_waits = 0
             delay = 1.0
+            _set_startup(phase="connecting", attempt=0, last_error=None, next_retry_in=None)
             while True:
                 try:
                     # discord.py owns the gateway: it reconnects and resumes sessions
@@ -758,6 +783,7 @@ async def main():
                     # A critical part of the bot (its cogs) could not load —
                     # never pretend to be healthy.
                     log_error(f"Support failed to start. Reason: {e}")
+                    _set_startup(phase="failed", last_error=str(e), next_retry_in=None)
                     exit_code = 1
                     return
 
@@ -766,6 +792,7 @@ async def main():
                     log_error("Check the TOKEN environment variable in Render and the "
                               "privileged intents in the Discord Developer Portal.")
                     log_error("Support failed to start. Reason: invalid Discord credentials or intents.")
+                    _set_startup(phase="failed", last_error=repr(e), next_retry_in=None)
                     exit_code = 1
                     return
 
@@ -774,6 +801,8 @@ async def main():
                         log_error("Discord API refused the connection (HTTP 401).")
                         log_error("Check the TOKEN environment variable in Render.")
                         log_error("Support failed to start. Reason: Discord rejected the configured token.")
+                        _set_startup(phase="failed", last_error="Discord rejected the token (HTTP 401)",
+                                     next_retry_in=None)
                         exit_code = 1
                         return
                     if getattr(e, "status", None) == 403:
@@ -810,11 +839,6 @@ async def main():
                     return
 
                 attempt += 1
-                if attempt >= MAX_START_ATTEMPTS:
-                    log_error(f"Support failed to start after {MAX_START_ATTEMPTS} attempts.")
-                    log_error(f"Reason: {describe_http_failure(failure)}")
-                    exit_code = 1
-                    return
 
                 # aiohttp 3.14+ ClientSession.close() also CLOSES the shared
                 # TCPConnector, and discord.py's static_login() REUSES that
@@ -844,22 +868,47 @@ async def main():
                              or "1015" in failure_body)
                     )
                 )
-                wait_time = min(delay, 30.0)
+
                 if is_rate_limited:
-                    # A 429/Cloudflare block lasts minutes; retrying faster
-                    # only renews the ban. Honour it with a long, bounded
-                    # cooldown instead of 1s..30s connect-style backoff.
-                    wait_time = min(max(wait_time, 60.0), 180.0)
-                    log_discord_once(
-                        "startup-rate-limit",
-                        f"{describe_http_failure(failure)} during login - "
-                        f"entering cooldown {wait_time:.0f}s "
-                        f"(attempt {attempt}/{MAX_START_ATTEMPTS - 1})",
+                    # Retry faster only renews the block: escalate the cooldown,
+                    # keep the process alive (/health stays 200 so Render does
+                    # not restart us) and let the block expire by itself.
+                    rate_limit_waits += 1
+                    if rate_limit_waits > MAX_RATE_LIMIT_WAITS:
+                        log_error(f"Support failed to start: Discord kept rate-limiting "
+                                  f"login after {MAX_RATE_LIMIT_WAITS} cooldowns.")
+                        log_error(f"Reason: {describe_http_failure(failure)}")
+                        _set_startup(phase="failed", last_error=describe_http_failure(failure),
+                                     next_retry_in=None)
+                        exit_code = 1
+                        return
+                    wait_time = min(
+                        RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_waits - 1)),
+                        RATE_LIMIT_MAX_WAIT,
                     )
+                    log_discord_once(
+                        f"startup-rate-limit-{rate_limit_waits}",
+                        f"{describe_http_failure(failure)} during login - "
+                        f"cooldown {wait_time:.0f}s "
+                        f"(wait {rate_limit_waits}/{MAX_RATE_LIMIT_WAITS})",
+                    )
+                else:
+                    if attempt >= MAX_START_ATTEMPTS:
+                        log_error(f"Support failed to start after {MAX_START_ATTEMPTS} attempts.")
+                        log_error(f"Reason: {describe_http_failure(failure)}")
+                        _set_startup(phase="failed", last_error=describe_http_failure(failure),
+                                     next_retry_in=None)
+                        exit_code = 1
+                        return
+                    wait_time = min(delay, 30.0)
+                    delay *= 2
+
+                _set_startup(phase="retrying", attempt=attempt,
+                             last_error=describe_http_failure(failure),
+                             next_retry_in=int(wait_time))
                 log_warning(f"Temporary connection failure ({describe_http_failure(failure)}) - "
-                            f"retry {attempt}/{MAX_START_ATTEMPTS - 1} in {wait_time:.0f}s")
+                            f"retrying in {wait_time:.0f}s (attempt {attempt})")
                 await asyncio.sleep(wait_time)
-                delay *= 2
         finally:
             # Also runs on fatal startup errors so the API server and any
             # background work are stopped before the process exits.
