@@ -1,10 +1,11 @@
-# Render Blueprint for Support Web (Discord Bot + Web Dashboard)
+# Render Blueprint — bot only (Discord bot + FastAPI backend in one process)
 # Docs: https://render.com/docs/blueprint-spec
 
 services:
   # ---------------------------------------------------------------------------
-  # 1. API + Bot Service (Python Web Service)
-  #    Hosts both the Discord Bot gateway connection and the FastAPI Dashboard API
+  # API + Bot Service (Python Web Service)
+  # Hosts the Discord gateway connection and the FastAPI backend (/health,
+  # /api/v1). The Next.js dashboard is NOT deployed here.
   # ---------------------------------------------------------------------------
   - type: web
     name: support-web-api
@@ -54,18 +55,18 @@ services:
       - key: LAVALINK_PORT
         sync: false
 
-      # --- CORS (All *.onrender.com are auto-allowed by default) ---
+      # --- CORS (no dashboard deployed; add origins here if you add one later) ---
       - key: CORS_ORIGINS
-        value: https://support-web-dashboard.onrender.com
+        value: ""
 
       # --- Keepalive (Free Tier Sleep Prevention) ---
-      # Automatically resolves RENDER_EXTERNAL_URL if KEEPALIVE_URL is left unset
+      # Left unset/empty: resolves RENDER_EXTERNAL_URL automatically -> /health
       - key: KEEPALIVE_ENABLED
         value: "true"
       - key: KEEPALIVE_INTERVAL
         value: "600"
       - key: KEEPALIVE_URL
-        value: https://support-web-api.onrender.com/health
+        value: ""
 
       # --- Persistent Storage (Optional on Paid Plans) ---
       # If using a paid plan with a Render Disk, mount at /var/data and set RENDER_DISK_PATH to /var/data
@@ -77,45 +78,3 @@ services:
     #   name: support-data
     #   mountPath: /var/data
     #   sizeGB: 1
-
-  # ---------------------------------------------------------------------------
-  # 2. Next.js Dashboard Frontend (Node.js Web Service)
-  # ---------------------------------------------------------------------------
-  - type: web
-    name: support-web-dashboard
-    runtime: node
-    plan: free
-    rootDir: dashboard
-    buildCommand: npm install && npm run build
-    startCommand: npm run start -- -H 0.0.0.0 -p $PORT
-    envVars:
-      - key: NODE_VERSION
-        value: "20"
-      - key: NEXT_TELEMETRY_DISABLED
-        value: "1"
-
-      # Point to your support-web-api service URL
-      - key: NEXT_PUBLIC_API_URL
-        value: https://support-web-api.onrender.com/api/v1
-      - key: NEXT_PUBLIC_DASHBOARD_API_KEY
-        sync: false
-
-      # Dashboard OAuth2 & Auth Secret
-      - key: NEXTAUTH_URL
-        value: https://support-web-dashboard.onrender.com
-      - key: NEXTAUTH_SECRET
-        sync: false
-      - key: DISCORD_CLIENT_ID
-        sync: false
-      - key: DISCORD_CLIENT_SECRET
-        sync: false
-
-      # Admin & Branding
-      - key: NEXT_PUBLIC_ADMIN_IDS
-        sync: false
-      - key: NEXT_PUBLIC_DEV_IDS
-        value: "1466133502939365437"
-      - key: NEXT_PUBLIC_BRAND_NAME
-        value: Support
-      - key: NEXT_PUBLIC_BRAND_NAME_WORD
-        value: SW
