@@ -739,7 +739,13 @@ class Moderation(commands.Cog):
     view.add_item(button)
     view.add_item(button1)
     embed.set_footer(text="Please click either 'Confirm' or 'Cancel' to proceed. You have 30 seconds to decide!")
-    await ctx.reply(embed=embed, view=view, mention_author=False,delete_after=30)
+    try:
+      await ctx.reply(embed=embed, view=view, mention_author=False,delete_after=30)
+    except discord.HTTPException as e:
+      if getattr(e, "status", None) == 429:
+        print(f"[ERROR] nuke: Discord rate-limited (429) — reply suppressed", flush=True)
+      else:
+        raise
 
 
 

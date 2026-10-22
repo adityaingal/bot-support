@@ -243,11 +243,11 @@ MAX_START_ATTEMPTS = 7
 # A 429/Cloudflare block during login lasts far longer than a normal connect
 # failure, and every process restart renews it. For rate limits we do NOT use
 # MAX_START_ATTEMPTS: we stay in this process and escalate the cooldown
-# (120s -> 600s, up to MAX_RATE_LIMIT_WAITS waits ~= 100 minutes) so Render
+# (120s -> 900s, up to MAX_RATE_LIMIT_WAITS waits ~= 2.5 hours) so Render
 # never restarts the service and the block has time to expire.
-MAX_RATE_LIMIT_WAITS = 12
+MAX_RATE_LIMIT_WAITS = 15
 RATE_LIMIT_BASE_WAIT = 120.0
-RATE_LIMIT_MAX_WAIT = 600.0
+RATE_LIMIT_MAX_WAIT = 900.0
 SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
 
 # Live startup state, published on /api/status (one HTTP GET beats digging

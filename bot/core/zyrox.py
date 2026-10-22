@@ -50,6 +50,25 @@ class zyrox(commands.AutoShardedBot):
         intents = discord.Intents.all()
         intents.presences = True
         intents.members = True
+        # Optional outbound proxy for Discord HTTP + gateway traffic.
+        # Render's shared IPs are frequently Cloudflare-blocked (Error 1015);
+        # set DISCORD_PROXY (e.g. http://user:pass@host:port) to route around it.
+        proxy = (os.getenv("DISCORD_PROXY") or "").strip() or None
+        proxy_auth = None
+        if proxy and "@" in proxy and "://" in proxy:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(proxy)
+                if parsed.username or parsed.password:
+                    from aiohttp import BasicAuth
+                    proxy_auth = BasicAuth(parsed.username or "", parsed.password or "")
+                    proxy = parsed._replace(netloc=parsed.hostname + (f":{parsed.port}" if parsed.port else "")).geturl()
+            except Exception:
+                pass
+        if proxy:
+            kwargs.setdefault("proxy", proxy)
+            if proxy_auth is not None:
+                kwargs.setdefault("proxy_auth", proxy_auth)
         super().__init__(command_prefix=self.get_prefix,
                          case_insensitive=True,
                          intents=intents,
@@ -117,7 +136,7 @@ class zyrox(commands.AutoShardedBot):
             self.session = None
         await super().close()
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=120)
     async def status_task(self):
         # Any exception here would silently stop the presence rotation forever,
         # so the whole loop body is guarded.
