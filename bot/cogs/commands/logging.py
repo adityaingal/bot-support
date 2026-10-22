@@ -1603,14 +1603,43 @@ class Logging(commands.Cog):
         await ctx.send_help(ctx.command)
 
     @log.command(
-        name="setup", description="Run the interactive setup for logging channels."
+        name="setup",
+        description="Interactive setup - or pass a channel (#logs) for instant auto setup.",
     )
     @commands.has_permissions(manage_guild=True)
     @commands.cooldown(1, 30, commands.BucketType.guild)
     @commands.max_concurrency(1, per=commands.BucketType.guild, wait=False)
-    async def log_setup(self, ctx: commands.Context):
-        """Enhanced interactive setup with improved user experience."""
+    async def log_setup(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """Interactive setup; with a channel argument, auto-configures every category."""
         try:
+            # --- Auto setup: /log setup #bot-logs enables everything at once ---
+            if channel is not None:
+                perms = channel.permissions_for(ctx.guild.me)
+                if not (perms.send_messages and perms.embed_links):
+                    embed = self._create_modern_embed(
+                        "Missing Permissions",
+                        f"I need **Send Messages** and **Embed Links** in {channel.mention}.",
+                    )
+                    await ctx.send(view=embed, ephemeral=True)
+                    return
+
+                await self._save_log_config(
+                    ctx.guild.id,
+                    {cat: channel.id for cat in LOG_CATEGORIES},
+                    {cat: True for cat in LOG_CATEGORIES},
+                    [],
+                    [],
+                    [],
+                    None,
+                )
+                embed = self._create_modern_embed(
+                    "Auto Setup Complete",
+                    f"All {len(LOG_CATEGORIES)} logging categories now post to {channel.mention}.\n\n"
+                    "Use `/log config` to tweak categories or `/log test` to verify.",
+                )
+                await ctx.send(view=embed)
+                return
+
             config = await self._get_log_config(ctx.guild.id)
             if config:
                 embed = self._create_modern_embed(
