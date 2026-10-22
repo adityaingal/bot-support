@@ -21,7 +21,17 @@ from typing import Optional
 
 from utils.http import http_client
 
-KEEPALIVE_URL = (os.getenv("KEEPALIVE_URL") or "https://bot-support-aauu.onrender.com/health").strip()
+def _resolve_keepalive_url() -> str:
+    url = (os.getenv("KEEPALIVE_URL") or "").strip()
+    if url:
+        return url
+    render_url = (os.getenv("RENDER_EXTERNAL_URL") or "").strip()
+    if render_url:
+        return f"{render_url.rstrip('/')}/health"
+    port = os.getenv("PORT") or os.getenv("API_PORT") or "8000"
+    return f"http://127.0.0.1:{port}/health"
+
+KEEPALIVE_URL = _resolve_keepalive_url()
 KEEPALIVE_SECONDS = max(10, int(os.getenv("KEEPALIVE_INTERVAL") or "600"))
 KEEPALIVE_ENABLED = (os.getenv("KEEPALIVE_ENABLED") or "true").strip().lower() == "true"
 KEEPALIVE_NAME = (os.getenv("KEEPALIVE_NAME") or "Support").strip()

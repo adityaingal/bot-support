@@ -1,30 +1,22 @@
-# Render Blueprint for Support
-#
-# Architecture:
-#   support-web-api       -> Discord bot + FastAPI dashboard backend (one process,
-#                            the API routes read the live bot client)
-#   support-web-dashboard -> Next.js dashboard
-#
-# The bot service is a *web* service (not a background worker) because this
-# project's API/health endpoint must be reachable by the dashboard and by
-# Render's health checker. The Discord gateway connection lives inside the same
-# process; discord.py handles gateway reconnects itself.
-#
-# Restart behaviour: Render restarts the instance whenever the process exits
-# (crash, deploy, SIGTERM). Do not add a custom restart loop in Python.
+# Render Blueprint for Support Web (Discord Bot + Web Dashboard)
+# Docs: https://render.com/docs/blueprint-spec
+
 services:
+  # ---------------------------------------------------------------------------
+  # 1. API + Bot Service (Python Web Service)
+  #    Hosts both the Discord Bot gateway connection and the FastAPI Dashboard API
+  # ---------------------------------------------------------------------------
   - type: web
     name: support-web-api
     runtime: python
+    plan: free
     rootDir: bot
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    # Render root directory is "bot", so the entry point is CodeX.py (not bot/CodeX.py)
     startCommand: python CodeX.py
     healthCheckPath: /health
     envVars:
-      # MUST be fully qualified (e.g. 3.11.9) — bare "3.11" is ignored by
-      # Render and it falls back to its default (3.14.x), which breaks
-      # discord.py login with "Session is closed".
+      # MUST be fully qualified (e.g. 3.11.9) — bare "3.11" is ignored by Render
+      # and falls back to 3.14.x which breaks discord.py login.
       - key: PYTHON_VERSION
         value: "3.11.9"
       - key: API_ENABLED
@@ -43,12 +35,16 @@ services:
         value: Support | >help
       - key: TUNNEL_ENABLED
         value: "false"
+
+      # --- Required Secrets (fill in when creating Blueprint) ---
       - key: TOKEN
         sync: false
       - key: DASHBOARD_API_KEY
         sync: false
       - key: OWNER_IDS
         sync: false
+
+      # --- Music / Lavalink (optional) ---
       - key: LAVALINK_HOST
         sync: false
       - key: LAVALINK_PASSWORD
@@ -57,35 +53,54 @@ services:
         value: "false"
       - key: LAVALINK_PORT
         sync: false
+
+      # --- CORS (All *.onrender.com are auto-allowed by default) ---
       - key: CORS_ORIGINS
         value: https://support-web-dashboard.onrender.com
-      # Self-ping keeps the service awake on the free tier (sleep would drop
-      # the Discord gateway). 600s < Render's 15-min idle threshold.
+
+      # --- Keepalive (Free Tier Sleep Prevention) ---
+      # Automatically resolves RENDER_EXTERNAL_URL if KEEPALIVE_URL is left unset
       - key: KEEPALIVE_ENABLED
         value: "true"
       - key: KEEPALIVE_INTERVAL
         value: "600"
       - key: KEEPALIVE_URL
         value: https://support-web-api.onrender.com/health
-      # Only used when a Render Disk is attached (paid plans). Set this to the
-      # disk's mount path so the 36 SQLite files under db/ persist across
-      # deploys. Leave unset on the free tier (db/ resets on each deploy).
+
+      # --- Persistent Storage (Optional on Paid Plans) ---
+      # If using a paid plan with a Render Disk, mount at /var/data and set RENDER_DISK_PATH to /var/data
       - key: RENDER_DISK_PATH
         sync: false
 
+    # Uncomment this block if using a paid plan with persistent disk storage for SQLite:
+    # disk:
+    #   name: support-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+
+  # ---------------------------------------------------------------------------
+  # 2. Next.js Dashboard Frontend (Node.js Web Service)
+  # ---------------------------------------------------------------------------
   - type: web
     name: support-web-dashboard
     runtime: node
+    plan: free
     rootDir: dashboard
     buildCommand: npm install && npm run build
     startCommand: npm run start -- -H 0.0.0.0 -p $PORT
     envVars:
       - key: NODE_VERSION
         value: "20"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+
+      # Point to your support-web-api service URL
       - key: NEXT_PUBLIC_API_URL
         value: https://support-web-api.onrender.com/api/v1
       - key: NEXT_PUBLIC_DASHBOARD_API_KEY
         sync: false
+
+      # Dashboard OAuth2 & Auth Secret
       - key: NEXTAUTH_URL
         value: https://support-web-dashboard.onrender.com
       - key: NEXTAUTH_SECRET
@@ -94,6 +109,8 @@ services:
         sync: false
       - key: DISCORD_CLIENT_SECRET
         sync: false
+
+      # Admin & Branding
       - key: NEXT_PUBLIC_ADMIN_IDS
         sync: false
       - key: NEXT_PUBLIC_DEV_IDS

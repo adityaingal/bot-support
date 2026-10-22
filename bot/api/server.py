@@ -94,10 +94,11 @@ def create_app() -> FastAPI:
         *_extra_origins,
     ]))
 
-    # Enable CORS for Next.js dashboard
+    # Enable CORS for Next.js dashboard (supports localhost, configured origins, and all *.onrender.com subdomains)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_allowed_origins,
+        allow_origin_regex=r"https://.*\.onrender\.com",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

@@ -23,6 +23,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-red?style=for-the-badge"/></a>
   <a href="https://discord.gg/UVRWygSpJq"><img src="https://img.shields.io/badge/Discord-Join_Server-5865F2?style=for-the-badge&logo=discord&logoColor=white"/></a>
 </p>
+<p>
+  <a href="https://render.com/deploy?repo=https://github.com/adityaingal/support-web" target="_blank"><img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render"/></a>
+</p>
 
 </div>
 
@@ -390,11 +393,12 @@ the Blueprint is applied. Never put a real token in `render.yaml`, `.env`,
 The API service automatically listens on Render's `$PORT` — no port variable
 needs to be set.
 
-Also add this redirect URI in the **Discord Developer Portal → OAuth2**:
+Also add this redirect URI in the **Discord Developer Portal → OAuth2 → Redirects**:
 
 ```text
 https://support-web-dashboard.onrender.com/api/auth/callback/discord
 ```
+*(Replace `support-web-dashboard` with your actual Render dashboard service URL if renamed)*
 
 ### 5. Deploy
 
