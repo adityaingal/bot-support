@@ -13,7 +13,7 @@ _banned_until = 0.0
 _last_log = 0.0
 _LOG_GAP = 300
 
-BAN_COOLDOWN = 1800.0
+BAN_COOLDOWN = 300.0
 
 
 class CloudflareBanError(RuntimeError):
@@ -57,6 +57,12 @@ def install() -> None:
     _orig = discord.http.HTTPClient.request
 
     async def patched(self, route, **kwargs):
+        # Login and gateway bootstrap must never be suppressed — the bot
+        # needs them to connect. Only suppress post-login REST calls.
+        route_url = getattr(route, "url", "") or ""
+        is_login = "users/@me" in route_url and getattr(route, "method", "") == "GET"
+        if is_login:
+            return await _orig(self, route, **kwargs)
         if is_banned():
             raise CloudflareBanError(
                 f"Discord REST call suppressed: Cloudflare 1015 ban active "

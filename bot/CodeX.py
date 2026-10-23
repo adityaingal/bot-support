@@ -840,20 +840,7 @@ async def main():
                         failure = e
 
                 except CloudflareBanError as e:
-                    # The cloudbreaker suppressed login because a Cloudflare
-                    # 1015 ban is active. Wait for the ban to expire instead
-                    # of burning retry attempts — the process stays alive
-                    # (/health 200) so Render never restart-loops us.
-                    wait_time = max(cloudbreaker.seconds_left(), 60.0)
-                    log_discord_once(
-                        "cloudbreaker-login-wait",
-                        f"Cloudflare ban active - waiting {wait_time:.0f}s before retrying login",
-                    )
-                    _set_startup(phase="retrying", attempt=attempt,
-                                 last_error="Cloudflare ban active",
-                                 next_retry_in=int(wait_time))
-                    await asyncio.sleep(wait_time)
-                    continue
+                    failure = e
 
                 except (discord.GatewayNotFound, aiohttp.ClientError,
                         asyncio.TimeoutError, OSError) as e:
