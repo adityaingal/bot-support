@@ -64,3 +64,6 @@ __pycache__/
 *.rar
 
 
+
+# Runtime JSON logs
+bot/logs/
