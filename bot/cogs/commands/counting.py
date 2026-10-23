@@ -46,9 +46,13 @@ class Counting(commands.Cog):
         with open(self.data_file, 'r') as f:
             self.counting_data = json.load(f)
 
-    def save_data(self):
+    def _write_data(self, payload):
         with open(self.data_file, 'w') as f:
-            json.dump(self.counting_data, f, indent=4)
+            f.write(payload)
+
+    async def save_data(self):
+        payload = json.dumps(self.counting_data, indent=4)
+        await asyncio.to_thread(self._write_data, payload)
 
     def is_enabled(self, guild_id):
         guild_id = str(guild_id)
@@ -87,7 +91,7 @@ class Counting(commands.Cog):
             self.counting_data[guild_id] = {"enabled": True, "channel": None, "count": 0, "reset_on_fail": False}
         else:
             self.counting_data[guild_id]["enabled"] = True
-        self.save_data()
+        await self.save_data()
         await ctx.send(view=CV2("Counting", f"{TICK} Counting has been Enabled!"))
 
     @counting.command(name="disable")
@@ -98,7 +102,7 @@ class Counting(commands.Cog):
             await self.not_enabled_embed(ctx)
             return
         self.counting_data[guild_id]["enabled"] = False
-        self.save_data()
+        await self.save_data()
         await ctx.send(view=CV2("Counting", f"{STOP} Counting has been Disabled!"))
 
     @counting.command(name="channel")
@@ -109,7 +113,7 @@ class Counting(commands.Cog):
             await self.not_enabled_embed(ctx)
             return
         self.counting_data[guild_id]["channel"] = channel.id
-        self.save_data()
+        await self.save_data()
         await ctx.send(view=CV2("Counting", f"{PIN} Counting channel set to {channel.mention}"))
 
     @counting.command(name="config")
@@ -128,7 +132,7 @@ class Counting(commands.Cog):
         else:
             await ctx.send(f"{CROSS} Invalid mode! Use `reset` or `continue`.")
             return
-        self.save_data()
+        await self.save_data()
         await ctx.send(view=CV2("Counting", msg))
 
     @counting.command(name="reset")
@@ -139,7 +143,7 @@ class Counting(commands.Cog):
             await self.not_enabled_embed(ctx)
             return
         self.counting_data[guild_id]["count"] = 0
-        self.save_data()
+        await self.save_data()
         await ctx.send(view=CV2("Counting", f"{NEXT} Counting has been reset to 0!"))
 
     @counting.command(name="stats")
@@ -194,12 +198,12 @@ class Counting(commands.Cog):
             await message.delete()
             if data.get("reset_on_fail", False):
                 self.counting_data[guild_id]["count"] = 0
-                self.save_data()
+                await self.save_data()
             return
 
         # Correct number
         self.counting_data[guild_id]["count"] = number
-        self.save_data()
+        await self.save_data()
         await message.add_reaction(TICK)
 
 def setup(bot):

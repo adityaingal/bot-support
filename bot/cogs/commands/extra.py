@@ -802,8 +802,11 @@ class Extra(commands.Cog):
   @ignore_check()
   @commands.cooldown(1, 3, commands.BucketType.user)
   async def github(self, ctx, *, search_query):
-    json = requests.get(
-      f"https://api.github.com/search/repositories?q={search_query}").json()
+    def _fetch():
+      return requests.get(
+        f"https://api.github.com/search/repositories?q={search_query}").json()
+
+    json = await asyncio.to_thread(_fetch)
 
     if json["total_count"] == 0:
       await ctx.send(f"No matching repositories found with the name: {search_query}")

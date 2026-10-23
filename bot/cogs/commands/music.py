@@ -37,6 +37,15 @@ SPOTIFY_TRACK_REGEX = r"https?://open\.spotify\.com/track/([a-zA-Z0-9]+)"
 SPOTIFY_PLAYLIST_REGEX = r"https?://open\.spotify\.com/playlist/([a-zA-Z0-9]+)"
 SPOTIFY_ALBUM_REGEX = r"https?://open\.spotify\.com/album/([a-zA-Z0-9]+)"
 
+
+class VoiceJoinError(Exception):
+    """A voice join was refused for a known, user-fixable reason."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        self.reason = reason
+        self.detail = detail
+        super().__init__(detail or reason)
+
 class SpotifyAPI:
     BASE_URL = "https://api.spotify.com/v1"
 
@@ -161,14 +170,23 @@ class SearchResultView(LayoutView):
 
             track = self.results[index]
             vc = self.ctx.voice_client
-            if vc is None:
+            if vc is None or not vc.is_connected():
+                if not self.ctx.author.voice:
+                    await interaction.response.send_message(
+                        "You need to be in a voice channel first.", ephemeral=True)
+                    return
                 if await self.ctx.cog.wait_for_node() is None:
                     await interaction.response.send_message(
                         "The music node isn't ready yet — try again in a few seconds.", ephemeral=True)
                     return
                 try:
-                    vc = await self.ctx.author.voice.channel.connect(cls=wavelink.Player)
-                except (wavelink.ChannelTimeoutException, wavelink.InvalidNodeException):
+                    vc = await self.ctx.cog.join_voice(self.ctx.author.voice.channel)
+                except VoiceJoinError as e:
+                    await interaction.response.send_message(e.detail, ephemeral=True)
+                    return
+                except (wavelink.ChannelTimeoutException,
+                        wavelink.InvalidNodeException,
+                        discord.ClientException):
                     await interaction.response.send_message(
                         "Couldn't connect to voice right now — try again in a few seconds.", ephemeral=True)
                     return
@@ -372,6 +390,74 @@ class Music(commands.Cog):
                 await asyncio.sleep(0.5)
         return None
 
+    async def clear_stuck_voice(self, guild: discord.Guild) -> None:
+        """Remove a half-open voice client left behind by a failed join.
+
+        wavelink's connect() raises ChannelTimeoutException, which is NOT an
+        asyncio.TimeoutError, so discord.py's Connectable.connect() skips its
+        cleanup branch and the dead player stays registered. Every later join
+        then fails with ClientException ("Already connected to a voice
+        channel") even though the bot is not in any voice channel.
+        """
+        vc = guild.voice_client
+        if vc is not None:
+            try:
+                await vc.disconnect(force=True)
+            except Exception:
+                pass
+        try:
+            guild._state._remove_voice_client(guild.id)
+        except Exception:
+            pass
+        try:
+            await guild.change_voice_state(channel=None)
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+
+    async def join_voice(self, channel, *, attempts: int = 2):
+        """Connect a wavelink Player to ``channel``.
+
+        Pre-checks Connect/Speak, clears any dead voice client left by an
+        earlier failed join, and retries once after a timeout (re-verifying
+        the Lavalink node first). Raises VoiceJoinError, wavelink exceptions
+        or discord.ClientException for the caller to turn into a message.
+        """
+        guild = channel.guild
+        me = guild.me
+        if me is not None:
+            perms = channel.permissions_for(me)
+            if not perms.connect or not perms.speak:
+                raise VoiceJoinError(
+                    "permissions",
+                    f"I need the **Connect** and **Speak** permissions in "
+                    f"{channel.mention} before I can join.",
+                )
+
+        last_error: Exception = RuntimeError("voice join did not run")
+        for attempt in range(attempts):
+            try:
+                return await channel.connect(cls=wavelink.Player)
+            except wavelink.InvalidNodeException as e:
+                raise e
+            except (wavelink.ChannelTimeoutException,
+                    discord.ClientException,
+                    asyncio.TimeoutError) as e:
+                # Never tear down a genuinely live connection elsewhere (the
+                # caller handles move_to) — only clear dead/half-open ones.
+                existing = guild.voice_client
+                if (isinstance(e, discord.ClientException)
+                        and existing is not None
+                        and existing.is_connected()):
+                    raise
+                last_error = e
+                if attempt == attempts - 1:
+                    raise
+                await self.clear_stuck_voice(guild)
+                if await self.wait_for_node(timeout=5.0) is None:
+                    raise last_error
+        raise last_error
+
     async def check_inactivity(self, guild_id):
         guild = self.client.get_guild(guild_id)
         if not guild:
@@ -506,13 +592,18 @@ class Music(commands.Cog):
             return
 
         vc = ctx.voice_client
-        if vc is None:
+        if vc is None or not vc.is_connected():
             if await self.wait_for_node() is None:
                 await ctx.send(view=CV2(f"{WARNING} The music node isn't ready yet — try again in a few seconds."))
                 return
             try:
-                vc = await ctx.author.voice.channel.connect(cls=wavelink.Player)
-            except (wavelink.ChannelTimeoutException, wavelink.InvalidNodeException):
+                vc = await self.join_voice(ctx.author.voice.channel)
+            except VoiceJoinError as e:
+                await ctx.send(view=CV2(f"{WARNING} {e.detail}"))
+                return
+            except (wavelink.ChannelTimeoutException,
+                    wavelink.InvalidNodeException,
+                    discord.ClientException):
                 await ctx.send(view=CV2(
                     f"{WARNING} Couldn't connect to voice right now — "
                     "check my Connect + Speak permissions and try again."))
@@ -999,12 +1090,16 @@ class Music(commands.Cog):
                 await vc.move_to(target)
                 await ctx.send(view=CV2("Moved to your voice channel."))
             else:
-                await target.connect(cls=wavelink.Player)
+                await self.join_voice(target)
                 await ctx.send(view=CV2("Joined the voice channel."))
+        except VoiceJoinError as e:
+            await ctx.send(view=CV2(f"{WARNING} {e.detail}"))
+            return
         except wavelink.ChannelTimeoutException:
             await ctx.send(view=CV2(
-                f"{WARNING} Couldn't connect to voice in time (30s). "
-                "Check that I have Connect + Speak in that channel, then try again."))
+                f"{WARNING} Couldn't connect to voice in time (30s) — even after an "
+                "automatic retry. Check that I have Connect + Speak in that channel, "
+                "then try again."))
             return
         except wavelink.InvalidNodeException:
             await ctx.send(view=CV2(f"{WARNING} The music node disconnected — try again shortly."))

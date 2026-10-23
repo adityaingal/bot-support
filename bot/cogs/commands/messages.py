@@ -10,13 +10,24 @@
 # ║                                                                  ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
+import os
 import discord
 from utils.emoji import ARROWRED
 from discord.ui import LayoutView, TextDisplay, Separator, Container
 from discord.ext import commands
-import sqlite3
+import aiosqlite
 from datetime import datetime
 from utils.config import *
+
+MESSAGES_DB = "db/messages.db"
+_CREATE_TABLE = """
+    CREATE TABLE IF NOT EXISTS messages (
+        guild_id INTEGER,
+        user_id INTEGER,
+        date TEXT,
+        count INTEGER
+    )
+"""
 
 
 class MessagesView(LayoutView):
@@ -47,51 +58,37 @@ class Messages(commands.Cog):
         if message.author.bot or not message.guild:
             return
 
-        conn = sqlite3.connect("db/messages.db")
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
-                guild_id INTEGER,
-                user_id INTEGER,
-                date TEXT,
-                count INTEGER
-            )
-        """)
-
         today = datetime.utcnow().strftime("%Y-%m-%d")
-        c.execute(
-            "SELECT count FROM messages WHERE guild_id = ? AND user_id = ? AND date = ?",
-            (message.guild.id, message.author.id, today),
-        )
-        result = c.fetchone()
-
-        if result:
-            c.execute(
-                "UPDATE messages SET count = count + 1 WHERE guild_id = ? AND user_id = ? AND date = ?",
+        async with aiosqlite.connect(MESSAGES_DB) as db:
+            async with db.execute(
+                "SELECT count FROM messages WHERE guild_id = ? AND user_id = ? AND date = ?",
                 (message.guild.id, message.author.id, today),
-            )
-        else:
-            c.execute(
-                "INSERT INTO messages (guild_id, user_id, date, count) VALUES (?, ?, ?, 1)",
-                (message.guild.id, message.author.id, today),
-            )
+            ) as cursor:
+                result = await cursor.fetchone()
 
-        conn.commit()
-        conn.close()
+            if result:
+                await db.execute(
+                    "UPDATE messages SET count = count + 1 WHERE guild_id = ? AND user_id = ? AND date = ?",
+                    (message.guild.id, message.author.id, today),
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO messages (guild_id, user_id, date, count) VALUES (?, ?, ?, 1)",
+                    (message.guild.id, message.author.id, today),
+                )
+            await db.commit()
 
     @commands.command(name="messages", aliases=["msg"])
     async def messages(self, ctx, member: discord.Member = None):
         member = member or ctx.author
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
-        conn = sqlite3.connect("db/messages.db")
-        c = conn.cursor()
-        c.execute(
-            "SELECT date, count FROM messages WHERE guild_id = ? AND user_id = ?",
-            (ctx.guild.id, member.id),
-        )
-        data = c.fetchall()
-        conn.close()
+        async with aiosqlite.connect(MESSAGES_DB) as db:
+            async with db.execute(
+                "SELECT date, count FROM messages WHERE guild_id = ? AND user_id = ?",
+                (ctx.guild.id, member.id),
+            ) as cursor:
+                data = await cursor.fetchall()
 
         total = sum(row[1] for row in data)
         today_count = sum(row[1] for row in data if row[0] == today)
@@ -103,4 +100,8 @@ class Messages(commands.Cog):
 
 
 async def setup(client):
+    os.makedirs("db", exist_ok=True)
+    async with aiosqlite.connect(MESSAGES_DB) as db:
+        await db.execute(_CREATE_TABLE)
+        await db.commit()
     await client.add_cog(Messages(client))

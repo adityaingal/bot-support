@@ -1674,8 +1674,7 @@ class Logging(commands.Cog):
 
     @commands.hybrid_command(
         name="autolog",
-        description="Auto-create one log channel per category (e.g. embrz-member-log), "
-                    "delete old *-log channels and enable logging.",
+        description="Create a log channel per category and enable all logging.",
     )
     @commands.has_permissions(manage_guild=True, manage_channels=True)
     @commands.cooldown(1, 60, commands.BucketType.guild)

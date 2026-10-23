@@ -13,6 +13,7 @@
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
+import asyncio
 import requests
 from io import BytesIO
 import re
@@ -68,7 +69,7 @@ class Steal(commands.Cog):
                 return
 
             sanitized_name = self.sanitize_name(name)
-            response = requests.get(url)
+            response = await asyncio.to_thread(requests.get, url)
             img = response.content
             emote = await ctx.guild.create_custom_emoji(name=sanitized_name, image=img)
             await ctx.send(embed=discord.Embed(title="Steal", description=f"Added emoji \"**{emote}**\"!", color=0xFF0000))
@@ -82,7 +83,7 @@ class Steal(commands.Cog):
                 return
 
             sanitized_name = self.sanitize_name(name)
-            response = requests.get(url)
+            response = await asyncio.to_thread(requests.get, url)
             img = BytesIO(response.content)
             emoji = "⭐"  
             await ctx.guild.create_sticker(name=sanitized_name, description="Added by bot", file=discord.File(img, filename="sticker.png"), emoji=emoji)

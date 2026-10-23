@@ -694,31 +694,64 @@ class Moderation(commands.Cog):
                      emoji=CROSS)
 
     async def button_callback(interaction: discord.Interaction):
-      if interaction.user == ctx.author:
-        if interaction.guild.me.guild_permissions.manage_channels:
-          channel = interaction.channel
-          newchannel = await channel.clone()
-          await newchannel.edit(position=channel.position)
-
-          await channel.delete()
-          embed = discord.Embed(
-            description="Channel has been Successfully nuked by **`%s`**" % (ctx.author),
-            color=self.color)
-          embed.set_author(name="Channel Nuked", icon_url="https://cdn.discordapp.com/avatars/1487525013576749106/198b9bc616ec574f6fd2f7121a1d3abc.png?size=1024")
-          embed.set_footer(text=f"Requested by {ctx.author}",
-                        icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
-          await newchannel.send(embed=embed)
-        else:
-          await interaction.response.edit_message(
-            content=
-            f"{ZWARNING} | It seems I'm missing the necessary permissions. Please grant me the `manage channel` permissions and try again.",
-            embed=None,
-            view=None)
-      else:
+      if interaction.user != ctx.author:
         await interaction.response.send_message("Oops! It looks like that message isn't from you. You need to run the command yourself to interact with it.",
                                                 embed=None,
                                                 view=None,
                                                 ephemeral=True)
+        return
+
+      # Acknowledge the click immediately. Cloning + deleting can outlive the
+      # 3s interaction window, and the old success path never acknowledged the
+      # interaction at all — Discord showed "This interaction failed" and the
+      # exception bubbled into the error handler (the nuke "crash").
+      try:
+        await interaction.response.defer()
+      except discord.HTTPException:
+        return
+
+      if not interaction.guild.me.guild_permissions.manage_channels:
+        try:
+          await interaction.followup.send(
+            f"{ZWARNING} | It seems I'm missing the necessary permissions. Please grant me the `manage channel` permissions and try again.",
+            ephemeral=True)
+        except discord.HTTPException:
+          pass
+        return
+
+      channel = interaction.channel
+      try:
+        newchannel = await channel.clone()
+        await newchannel.edit(position=channel.position)
+      except discord.HTTPException as e:
+        try:
+          await interaction.followup.send(f"{ZWARNING} | Nuke failed: {e}", ephemeral=True)
+        except discord.HTTPException:
+          pass
+        return
+
+      # Deleting the original channel also kills the interaction's message, so
+      # confirm from the new channel instead — and never let a failure here
+      # reach the error handler.
+      try:
+        await channel.delete()
+      except discord.HTTPException as e:
+        try:
+          await interaction.followup.send(f"{ZWARNING} | Nuke failed while deleting the old channel: {e}", ephemeral=True)
+        except discord.HTTPException:
+          pass
+        return
+
+      embed = discord.Embed(
+        description="Channel has been Successfully nuked by **`%s`**" % (ctx.author),
+        color=self.color)
+      embed.set_author(name="Channel Nuked", icon_url="https://cdn.discordapp.com/avatars/1487525013576749106/198b9bc616ec574f6fd2f7121a1d3abc.png?size=1024")
+      embed.set_footer(text=f"Requested by {ctx.author}",
+                    icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+      try:
+        await newchannel.send(embed=embed)
+      except discord.HTTPException:
+        pass
 
     async def button1_callback(interaction: discord.Interaction):
       if interaction.user == ctx.author:

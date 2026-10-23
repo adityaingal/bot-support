@@ -215,6 +215,17 @@ from utils.sync_emojis import run_sync
 from utils import keepalive
 from utils.http import http_client, describe_http_failure, log_discord_once
 
+# Reuse a small set of persistent aiosqlite connections instead of spawning a
+# new worker thread + file open for every query. Each message used to open
+# ~40-60 connections (get_prefix, automod listeners, blacklist checks, ...),
+# which dominated response latency. Installed AFTER the tracking patch above so
+# pooled connections are still registered and closed during shutdown. The
+# `utils.dbpool` import is deferred until after core/utils are loaded to avoid
+# a circular import during package bootstrap.
+from utils.dbpool import install as _install_dbpool
+
+_install_dbpool(aiosqlite)
+
 import jishaku
 import cogs
 
@@ -243,11 +254,13 @@ MAX_START_ATTEMPTS = 7
 # A 429/Cloudflare block during login lasts far longer than a normal connect
 # failure, and every process restart renews it. For rate limits we do NOT use
 # MAX_START_ATTEMPTS: we stay in this process and escalate the cooldown
-# (120s -> 900s, up to MAX_RATE_LIMIT_WAITS waits ~= 2.5 hours) so Render
-# never restarts the service and the block has time to expire.
-MAX_RATE_LIMIT_WAITS = 15
+# (120s -> 1800s, up to MAX_RATE_LIMIT_WAITS waits ~= 13 hours) so Render
+# never restarts the service and the block has time to expire. Cloudflare IP
+# blocks from repeated logins routinely last many hours — retrying faster (or
+# exiting and letting Render restart us) only renews them.
+MAX_RATE_LIMIT_WAITS = 30
 RATE_LIMIT_BASE_WAIT = 120.0
-RATE_LIMIT_MAX_WAIT = 900.0
+RATE_LIMIT_MAX_WAIT = 1800.0
 SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
 
 # Live startup state, published on /api/status (one HTTP GET beats digging

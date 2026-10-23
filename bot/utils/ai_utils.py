@@ -11,6 +11,7 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 
 import aiohttp
+import asyncio
 import io
 import time
 import os
@@ -158,8 +159,12 @@ async def generate_image_prodia(prompt, model, sampler, seed, neg):
 
 async def text_to_speech(text):
     bytes_obj = io.BytesIO()
-    detected_language = detect(text)
-    tts = gTTS(text=text, lang=detected_language)
-    tts.write_to_fp(bytes_obj)
+
+    def _synthesize():
+        detected_language = detect(text)
+        tts = gTTS(text=text, lang=detected_language)
+        tts.write_to_fp(bytes_obj)
+
+    await asyncio.to_thread(_synthesize)
     bytes_obj.seek(0)
     return bytes_obj
