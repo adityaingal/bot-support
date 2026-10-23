@@ -38,7 +38,6 @@ from .commands.block import Block
 from .commands.nightmode import Nightmode
 from .commands.tracking import Tracking
 from .commands.owner import Badges
-#from .commands.map import Map
 from .commands.autoresponder import AutoResponder
 from .commands.customrole import Customrole
 from .commands.autorole import AutoRole
@@ -84,7 +83,6 @@ from .commands.youtube import Youtube
 from .commands.plans import Plans
 #____________ Events _____________
 
-#from .events.autoblacklist import AutoBlacklist
 from .events.Errors import Errors
 from .events.on_guild import Guild
 from .events.autorole import Autorole2
@@ -93,7 +91,6 @@ from .events.greet2 import greet
 from .events.mention import Mention
 from .events.react import React
 from .events.autoreact import AutoReactListener
-#from .events.topgg import TopGG
 from .events.ai import AIResponses 
 from .events.stickymessage import StickyMessageListener
 
@@ -103,7 +100,6 @@ from .zyrox.extra import _extra
 from .zyrox.general import _general
 from .zyrox.automod import _automod 
 from .zyrox.moderation import _moderation
-#from .zyrox.inviteTracker import _inviteTracker
 from .zyrox.music import _music
 from .zyrox.fun import _fun
 from .zyrox.games import _games
@@ -113,7 +109,6 @@ from .zyrox.voice import _voice
 from .zyrox.welcome import _welcome 
 from .zyrox.giveaway import _giveaway
 from .zyrox.ticket import _ticket
-#from .axon.vanityroles import Vanityroles69999
 from .zyrox.logging import _logging
 from .zyrox.vanity import _vanity
 from .zyrox.inviteTracker import inviteTracker 
@@ -238,7 +233,6 @@ async def setup(bot: zyrox):
   await _safe_add(NoPrefix)
   await _safe_add(FilterCog)
   await _safe_add(Global)
- # await bot.add_cog(Map(bot))
   await _safe_add(TicketCog)
   await _safe_add(Logging)
   await _safe_add(QR)
@@ -294,9 +288,6 @@ async def setup(bot: zyrox):
   await _safe_add(_joindm)
   await _safe_add(_birth)
 
-
-  
-  #await bot.add_cog(AutoBlacklist(bot))
   await _safe_add(Guild)
   await _safe_add(Errors)
   await _safe_add(Autorole2)
@@ -330,16 +321,6 @@ async def setup(bot: zyrox):
   await _safe_add(AntiWebhookUpdate)
   await _safe_add(AntiWebhookCreate)
   await _safe_add(AntiWebhookDelete)
-
-
-#Extra Optional Events 
-
-  #await bot.add_cog(AntiEmojiCreate(bot))
-  #await bot.add_cog(AntiEmojiDelete(bot))
-  #await bot.add_cog(AntiEmojiUpdate(bot))
-  #await bot.add_cog(AntiSticker(bot))
-  #await bot.add_cog(AntiUnban(bot))
-
 
   await _safe_add(AntiSpam)
   await _safe_add(AntiCaps)

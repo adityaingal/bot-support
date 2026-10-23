@@ -6,7 +6,6 @@ discord-ext-menus
 # Async HTTP & Networking
 aiohttp>=3.9.0
 requests>=2.31.0
-httpx>=0.27.0
 pycloudflared
 
 # FastAPI Web API for Dashboard
@@ -25,15 +24,10 @@ colorama
 psutil
 python-dotenv
 PyYAML
-python-dateutil
 pytz
 chess
 mcstatus
 wavelink>=2.0.0
 
-# AI & Language Tools
-openai
-duckduckgo-search==6.3.6
+# Language Tools
 deep-translator==1.11.4
-gtts
-langdetect
