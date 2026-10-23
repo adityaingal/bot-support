@@ -20,6 +20,7 @@ import traceback
 from threading import Thread
 from datetime import datetime
 import random
+import socket
 import time
 
 # Logging must never be able to crash the process. Render logs are UTF-8, but
@@ -261,7 +262,10 @@ MAX_START_ATTEMPTS = 7
 # (120s -> 1800s, up to MAX_RATE_LIMIT_WAITS waits ~= 13 hours) so Render
 # never restarts the service and the block has time to expire. Cloudflare IP
 # blocks from repeated logins routinely last many hours — retrying faster (or
-# exiting and letting Render restart us) only renews them.
+# exiting and letting Render restart us) only renews them. Beyond the last
+# wait the process does NOT exit: it keeps retrying every RATE_LIMIT_MAX_WAIT
+# forever (phase "blocked") because a Render restart would reset the ladder
+# back to 120s and renew the block.
 MAX_RATE_LIMIT_WAITS = 30
 RATE_LIMIT_BASE_WAIT = 120.0
 RATE_LIMIT_MAX_WAIT = 1800.0
@@ -278,6 +282,48 @@ def _set_startup(**kwargs) -> None:
         startup_state["updated"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     except Exception:
         pass
+
+
+def _rate_limit_headers(exc) -> dict:
+    """Readable subset of a 429's response headers (never the body).
+
+    Retry-After says exactly how long the block lasts; Via/CF-RAY tell a
+    Cloudflare edge block apart from a normal Discord bucket limit.
+    """
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return {}
+    out = {}
+    for key in ("Retry-After", "Via", "CF-RAY", "CF-Cache-Status"):
+        value = headers.get(key)
+        if value:
+            out[key] = value
+    return out
+
+
+async def _discord_blocked_over(family: int) -> bool:
+    """True when discord.com cannot be usefully reached with this address family.
+
+    Escape hatch for edge blocks: if the default (IPv4) route is blocked but
+    IPv6 still answers normally, login can be forced over IPv6.
+    """
+    label = "IPv6" if family == socket.AF_INET6 else "IPv4"
+    try:
+        conn = aiohttp.TCPConnector(family=family, limit=1)
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(connector=conn, timeout=timeout) as probe:
+            async with probe.get(
+                "https://discord.com/api/v10/users/@me",
+                headers={"User-Agent": "DiscordBot (https://discord.com, 2.0) Python/3.11 aiohttp/3.9"},
+            ) as resp:
+                text = await resp.text()
+                blocked = resp.status == 429 or "<html" in text.lower()
+                log_info(f"[netcheck] discord.com over {label}: HTTP {resp.status} "
+                         f"({'BLOCKED' if blocked else 'ok'})")
+                return blocked
+    except Exception as e:
+        log_warning(f"[netcheck] discord.com over {label} unreachable: {type(e).__name__}: {e}")
+        return True
 
 
 client = zyrox()
@@ -783,6 +829,8 @@ async def main():
             attempt = 0
             rate_limit_waits = 0
             delay = 1.0
+            non_rate_failures = 0
+            using_ipv6 = False
             _set_startup(phase="connecting", attempt=0, last_error=None, next_retry_in=None)
             while True:
                 try:
@@ -879,8 +927,9 @@ async def main():
 
                 failure_status = getattr(failure, "status", None)
                 failure_body = str(failure).lower()
-                is_rate_limited = isinstance(failure, discord.HTTPException) and (
-                    failure_status == 429
+                is_rate_limited = isinstance(failure, (discord.HTTPException, CloudflareBanError)) and (
+                    isinstance(failure, CloudflareBanError)
+                    or failure_status == 429
                     or (
                         failure_status == 403
                         and ("<html" in failure_body
@@ -889,32 +938,83 @@ async def main():
                     )
                 )
 
+                last_error_text = describe_http_failure(failure)
+                next_phase = "retrying"
+
                 if is_rate_limited:
+                    # IPv6 escape hatch: a 429 means THIS route is edge-blocked.
+                    # Probe IPv6 once; when it answers cleanly, force the next
+                    # attempt (REST login + gateway) over it.
+                    if not using_ipv6:
+                        try:
+                            if not await _discord_blocked_over(socket.AF_INET6):
+                                client.http.connector = aiohttp.TCPConnector(
+                                    limit=0, family=socket.AF_INET6)
+                                using_ipv6 = True
+                                log_info("[netcheck] IPv6 route is clean - "
+                                         "forcing Discord traffic over IPv6")
+                        except Exception:
+                            pass
+                    else:
+                        # This attempt already ran over IPv6 and was still
+                        # blocked: fall back to the default family next round.
+                        using_ipv6 = False
+
                     # Retry faster only renews the block: escalate the cooldown,
                     # keep the process alive (/health stays 200 so Render does
                     # not restart us) and let the block expire by itself.
                     rate_limit_waits += 1
+                    headers_hint = _rate_limit_headers(failure)
+                    if headers_hint:
+                        last_error_text = describe_http_failure(failure) + " | " + " ".join(
+                            f"{k}={v}" for k, v in headers_hint.items())
+                    retry_after = 0.0
+                    try:
+                        retry_after = float(headers_hint.get("Retry-After") or 0.0)
+                    except (TypeError, ValueError):
+                        retry_after = 0.0
+                    ban_left = 0.0
+                    try:
+                        ban_left = cloudbreaker.seconds_left()
+                    except Exception:
+                        pass
+
                     if rate_limit_waits > MAX_RATE_LIMIT_WAITS:
-                        log_error(f"Support failed to start: Discord kept rate-limiting "
-                                  f"login after {MAX_RATE_LIMIT_WAITS} cooldowns.")
-                        log_error(f"Reason: {describe_http_failure(failure)}")
-                        _set_startup(phase="failed", last_error=describe_http_failure(failure),
-                                     next_retry_in=None)
-                        exit_code = 1
-                        return
-                    wait_time = min(
-                        RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_waits - 1)),
-                        RATE_LIMIT_MAX_WAIT,
-                    )
-                    log_discord_once(
-                        f"startup-rate-limit-{rate_limit_waits}",
-                        f"{describe_http_failure(failure)} during login - "
-                        f"cooldown {wait_time:.0f}s "
-                        f"(wait {rate_limit_waits}/{MAX_RATE_LIMIT_WAITS})",
-                    )
+                        # Exiting would let Render restart the process and reset
+                        # the ladder to 120s - that is exactly what kept renewing
+                        # the block. Stay alive on the longest cooldown instead.
+                        wait_time = max(RATE_LIMIT_MAX_WAIT, min(retry_after, 7200.0), ban_left)
+                        next_phase = "blocked"
+                        log_error(f"Login still rate-limited after {MAX_RATE_LIMIT_WAITS} "
+                                  f"cooldowns - process stays up; next attempt in "
+                                  f"{wait_time:.0f}s. Reason: {last_error_text}")
+                    else:
+                        wait_time = min(
+                            RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_waits - 1)),
+                            RATE_LIMIT_MAX_WAIT,
+                        )
+                        # Never wake up before Retry-After / an active
+                        # cloudbreaker ban says the edge will answer again.
+                        wait_time = max(wait_time, min(retry_after, 7200.0), ban_left)
+                        log_discord_once(
+                            f"startup-rate-limit-{rate_limit_waits}",
+                            f"{describe_http_failure(failure)} during login - "
+                            f"cooldown {wait_time:.0f}s "
+                            f"(wait {rate_limit_waits}/{MAX_RATE_LIMIT_WAITS})"
+                            + (f" | {' '.join(f'{k}={v}' for k, v in headers_hint.items())}"
+                               if headers_hint else ""),
+                        )
+                    non_rate_failures = 0
                 else:
-                    if attempt >= MAX_START_ATTEMPTS:
-                        log_error(f"Support failed to start after {MAX_START_ATTEMPTS} attempts.")
+                    using_ipv6 = False
+                    non_rate_failures += 1
+                    # Only CONSECUTIVE non-rate-limit failures count: a single
+                    # network blip after hours of cooldown must not exit the
+                    # process (a restart would reset the whole rate-limit
+                    # ladder back to 120s), but a real crash loop still exits.
+                    if non_rate_failures >= MAX_START_ATTEMPTS:
+                        log_error(f"Support failed to start after {MAX_START_ATTEMPTS} "
+                                  f"consecutive attempts.")
                         log_error(f"Reason: {describe_http_failure(failure)}")
                         _set_startup(phase="failed", last_error=describe_http_failure(failure),
                                      next_retry_in=None)
@@ -923,11 +1023,12 @@ async def main():
                     wait_time = min(delay, 30.0)
                     delay *= 2
 
-                _set_startup(phase="retrying", attempt=attempt,
-                             last_error=describe_http_failure(failure),
+                _set_startup(phase=next_phase, attempt=attempt,
+                             last_error=last_error_text,
                              next_retry_in=int(wait_time))
-                log_warning(f"Temporary connection failure ({describe_http_failure(failure)}) - "
-                            f"retrying in {wait_time:.0f}s (attempt {attempt})")
+                if next_phase == "retrying":
+                    log_warning(f"Temporary connection failure ({describe_http_failure(failure)}) - "
+                                f"retrying in {wait_time:.0f}s (attempt {attempt})")
                 await asyncio.sleep(wait_time)
         finally:
             # Also runs on fatal startup errors so the API server and any

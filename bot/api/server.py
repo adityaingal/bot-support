@@ -14,9 +14,11 @@ from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
+import socket
 import time
 import json
 import logging
+import aiohttp
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -35,6 +37,62 @@ if not logger.handlers:
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter('%(message)s'))
     logger.addHandler(handler)
+
+# --- Netcheck (?netcheck=1 on /api/status) ---------------------------------
+# On-demand outbound diagnosis from inside the instance: is THIS box's
+# egress IP blocked by Discord's Cloudflare edge, and does IPv6 work?
+# Cached so repeated polling can never turn into a request storm.
+_NETCHECK_CACHE = {"at": 0.0, "data": None}
+_NETCHECK_TTL = 300.0
+_PROBE_HEADERS = {"User-Agent": "DiscordBot (https://discord.com, 2.0) Python/3.11 aiohttp/3.9"}
+
+
+async def _probe_discord(family: int) -> dict:
+    """GET /users/@me over one address family; 429/HTML = edge-blocked."""
+    out = {}
+    connector = aiohttp.TCPConnector(family=family, limit=1)
+    timeout = aiohttp.ClientTimeout(total=10)
+    try:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.get("https://discord.com/api/v10/users/@me",
+                                   headers=_PROBE_HEADERS) as resp:
+                out["status"] = resp.status
+                out["via"] = resp.headers.get("Via")
+                if resp.status == 429:
+                    out["retry_after_s"] = resp.headers.get("Retry-After")
+                    out["cf_ray"] = resp.headers.get("CF-RAY")
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
+async def _netcheck() -> dict:
+    """Outbound reachability report (Discord login diagnosis, no secrets)."""
+    now = time.time()
+    cached = _NETCHECK_CACHE["data"]
+    if cached and now - _NETCHECK_CACHE["at"] < _NETCHECK_TTL:
+        return {**cached, "cached_for_s": int(_NETCHECK_TTL - (now - _NETCHECK_CACHE["at"]))}
+    data = {"checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    try:
+        infos = socket.getaddrinfo("discord.com", 443)
+        data["discord_dns_families"] = sorted({info[0] for info in infos})  # 2=IPv4, 10=IPv6
+    except Exception as e:
+        data["discord_dns_error"] = f"{type(e).__name__}: {e}"
+    try:
+        timeout = aiohttp.ClientTimeout(total=8)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get("https://api.ipify.org") as resp:
+                data["egress_ipv4"] = (await resp.text()).strip()[:64]
+    except Exception as e:
+        data["egress_ipv4_error"] = f"{type(e).__name__}: {e}"
+    data["discord_ipv4"] = await _probe_discord(socket.AF_INET)
+    data["discord_ipv6"] = await _probe_discord(socket.AF_INET6)
+    _NETCHECK_CACHE.update(at=now, data=data)
+    print(f"[netcheck] egress={data.get('egress_ipv4', '?')} "
+          f"discord/IPv4={data['discord_ipv4'].get('status', data['discord_ipv4'].get('error'))} "
+          f"discord/IPv6={data['discord_ipv6'].get('status', data['discord_ipv6'].get('error'))}",
+          flush=True)
+    return data
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -126,8 +184,9 @@ def create_app() -> FastAPI:
         return Response(status_code=200)
 
     @app.get("/api/status", summary="Service status",
-             description="Web service status vs Discord gateway status. Public, lightweight, no secrets.")
-    async def api_status():
+             description="Web service status vs Discord gateway status. Public, lightweight, no secrets. "
+                         "Add ?netcheck=1 for an on-demand outbound connectivity report (cached 5 min).")
+    async def api_status(netcheck: str | None = None):
         """Honest split between the HTTP service and the Discord connection.
 
         Web ONLINE does NOT imply Discord ONLINE - the two are reported
@@ -163,6 +222,11 @@ def create_app() -> FastAPI:
                 payload["users"] = sum(g.member_count or 0 for g in bot.guilds)
             except Exception:
                 pass
+        if netcheck == "1":
+            try:
+                payload["netcheck"] = await _netcheck()
+            except Exception as e:
+                payload["netcheck"] = {"error": f"{type(e).__name__}: {e}"}
         return payload
 
     @app.head("/api/status", summary="Service status (HEAD)", include_in_schema=False)
