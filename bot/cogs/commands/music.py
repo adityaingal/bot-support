@@ -533,43 +533,42 @@ class Music(commands.Cog):
         else:
             candidates = list(self.LAVALINK_CANDIDATES)
 
-        nodes = [
-            wavelink.Node(uri=self._node_uri(host, secure, port), password=pwd)
-            for host, pwd, secure, port in candidates
-        ]
-        # Reference kept on the bot so graceful shutdown can close the node's
-        # aiohttp session (wavelink.Pool.close() does not close it).
-        self.client.lavalink_node = nodes[0]
+        # Primary first, in isolation: Pool.connect() iterates sequentially and
+        # lets non-wavelink errors (timeouts, connector errors) propagate, so a
+        # dead alternate could otherwise abort or delay the whole batch.
+        while True:
+            for i, (host, pwd, secure, port) in enumerate(candidates):
+                uri = self._node_uri(host, secure, port)
+                node = wavelink.Node(uri=uri, password=pwd)
+                # Reference kept on the bot so graceful shutdown can close the
+                # node's aiohttp session (Pool.close() does not close it).
+                self.client.lavalink_node = node
+                try:
+                    await asyncio.wait_for(
+                        wavelink.Pool.connect(
+                            nodes=[node], client=self.client, cache_capacity=None
+                        ),
+                        timeout=30,
+                    )
+                except Exception as e:
+                    print(
+                        f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
+                        f"failed ({uri}): {type(e).__name__}: {e}",
+                        flush=True,
+                    )
+                    continue
 
-        connect_task = asyncio.create_task(
-            wavelink.Pool.connect(nodes=nodes, client=self.client, cache_capacity=None)
-        )
-        done, _ = await asyncio.wait({connect_task}, timeout=120)
-        if not done:
+                if node.identifier in wavelink.Pool.nodes:
+                    print(f"[Music] Lavalink node connected: {uri}", flush=True)
+                    return
+                print(f"[Music] Lavalink node rejected: {uri}", flush=True)
+
             print(
-                "[Music] Lavalink not reachable after 120s "
-                f"({len(nodes)} candidates) - wavelink keeps retrying in background",
+                f"[Music] All {len(candidates)} Lavalink candidates failed - "
+                "retrying in 30s",
                 flush=True,
             )
-            await connect_task
-
-        exc = connect_task.exception()
-        if exc is not None:
-            print(f"[Music] Lavalink connect error: {type(exc).__name__}: {exc}", flush=True)
-            return
-
-        # Pool.connect logs-and-skips auth/version failures instead of raising,
-        # so a missing node here means the server rejected us.
-        for node in nodes:
-            if node.identifier in wavelink.Pool.nodes:
-                print(f"[Music] Lavalink node connected: {node.uri}", flush=True)
-                return
-        print(
-            "[Music] All Lavalink candidates rejected "
-            f"(bad password or non-Lavalink-v4 server?): "
-            f"{', '.join(n.uri for n in nodes)}",
-            flush=True,
-        )
+            await asyncio.sleep(30)
 
 
     async def display_player_embed(self, player, track, ctx, autoplay=False):
