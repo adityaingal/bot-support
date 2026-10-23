@@ -179,7 +179,13 @@ import aiohttp
 import aiosqlite
 import weakref
 import discord
-from discord import Spotify
+try:
+    from discord import Spotify
+except ImportError:
+    try:
+        from discord.activity import Spotify
+    except ImportError:
+        Spotify = getattr(discord, "Spotify", None)
 from discord.ext import commands, tasks
 from discord.utils import MISSING
 
@@ -214,6 +220,7 @@ from utils.config import *
 from utils.emoji import SUCCESS, ERROR, TICK, CROSS, REACTION_TEST_EMOJIS
 from utils.sync_emojis import run_sync
 from utils import keepalive
+from utils import db_backup
 from utils.http import http_client, describe_http_failure, log_discord_once
 from utils import cloudbreaker
 from utils.cloudbreaker import CloudflareBanError
@@ -433,6 +440,10 @@ async def on_ready():
     # Started exactly once per process — on_ready can fire again on reconnect.
     _sync_task = asyncio.create_task(sync_commands(), name="support:sync_commands")
     _stats_task = asyncio.create_task(update_stats(), name="support:update_stats")
+    try:
+        db_backup.start(client)
+    except Exception as e:
+        log_warning(f"Database backup task start failed: {e!r}")
     log_info("Background tasks started.")
 
 
@@ -496,7 +507,7 @@ async def on_command_completion(context: commands.Context) -> None:
 async def spotify(ctx: Context, user: discord.Member = None):
     """Shows what a user is listening to on Spotify."""
     user = user or ctx.author
-    spotify_activity = next((activity for activity in user.activities if isinstance(activity, Spotify)), None)
+    spotify_activity = next((activity for activity in user.activities if Spotify and isinstance(activity, Spotify)), None)
 
     if not spotify_activity:
         return await ctx.send(f"{user.name} is not listening to Spotify.")
@@ -557,12 +568,15 @@ async def create_hook(ctx: Context, *, name: str = None):
             description=f"A webhook named **{webhook.name}** was created.",
             color=0xFF0000
         )
-        await ctx.author.send(f"Webhook URL for **{webhook.name}** in **{ctx.channel.name}**:\n||{webhook.url}||", embed=embed)
-        await ctx.send("Webhook created. I've sent the URL to your DMs.")
+        try:
+            await ctx.author.send(f"Webhook URL for **{webhook.name}** in **{ctx.channel.name}**:\n||{webhook.url}||", embed=embed)
+            await ctx.send("Webhook created. I've sent the URL to your DMs.")
+        except Exception:
+            await ctx.send(f"Webhook created: **{webhook.name}**\n||{webhook.url}||\n(I could not DM you the URL.)")
     except discord.Forbidden:
         await ctx.send("I don't have permission to create webhooks here.")
-    except Exception:
-        await ctx.send(f"Webhook created: **{webhook.name}**\n||{webhook.url}||\n(I could not DM you the URL.)")
+    except Exception as e:
+        await ctx.send(f"{ERROR} Failed to create webhook: `{e}`")
 
 
 @client.command(name='delete_hook', aliases=['delhook'])
@@ -574,7 +588,7 @@ async def delete_hook(ctx: Context, webhook_url: str = None):
 
     try:
         async with aiohttp.ClientSession() as session:
-            webhook = await discord.Webhook.from_url(webhook_url, session=session)
+            webhook = discord.Webhook.from_url(webhook_url, session=session)
             await webhook.delete(reason=f"Deleted by {ctx.author}")
         await ctx.send(f"{SUCCESS} Webhook deleted successfully.")
     except (discord.NotFound, ValueError):
@@ -715,6 +729,14 @@ async def shutdown(reason: str) -> None:
         if task is not None and not task.done():
             task.cancel()
 
+    # Final database backup before closing connections
+    try:
+        db_backup.stop()
+        if db_backup.is_enabled():
+            await db_backup.backup_now(reason=f"shutdown ({reason})")
+    except Exception as e:
+        log_warning(f"Final database backup on shutdown failed: {e!r}")
+
     if api_server is not None:
         try:
             api_server.should_exit = True
@@ -816,6 +838,12 @@ async def main():
     # ONE health checker for the whole process (never started from on_ready,
     # so reconnects/reloads cannot create duplicate timers).
     keepalive.start()
+
+    # Auto-restore databases from Discord backup if on a fresh Render container
+    try:
+        await db_backup.restore_if_needed(bot_token=TOKEN)
+    except Exception as e:
+        log_warning(f"Startup database restore skipped: {e!r}")
 
     async with client:
         try:
@@ -922,6 +950,7 @@ async def main():
                     pass
                 try:
                     client.http.connector = MISSING
+                    setattr(client.http, "_HTTPClient__session", None)
                 except Exception:
                     pass
 

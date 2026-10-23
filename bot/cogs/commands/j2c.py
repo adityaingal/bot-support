@@ -10,6 +10,7 @@
 # ║                                                                  ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
+import os
 import discord
 from discord.ext import commands
 from discord import ui, SelectOption
@@ -25,7 +26,17 @@ class JoinToCreate(commands.Cog):
         self.private_channels: Dict[int, Dict] = {}
         self.category_name = "J2C"
         self.setup_data: Dict[int, Dict] = {}
-        self.db_path = "j2c_data.db"
+        # Unify database storage under db/
+        legacy_path = "j2c_data.db"
+        standard_path = os.path.join("db", "j2c_data.db")
+        if os.path.exists(legacy_path) and not os.path.exists(standard_path):
+            try:
+                import shutil
+                os.makedirs("db", exist_ok=True)
+                shutil.move(legacy_path, standard_path)
+            except Exception:
+                pass
+        self.db_path = standard_path if os.path.exists(standard_path) or os.path.exists("db") else legacy_path
         self.blocked_users: Dict[int, List[int]] = {}  # {vc_id: [user_ids]}
         self.creating_vc = set()
 

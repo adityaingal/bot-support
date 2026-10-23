@@ -13,7 +13,6 @@
 import sys, os
 import discord
 from discord.ext import commands
-from core import Context
 from utils.emoji import DENIED
 from utils.jsonio import load_json, save_json
 from utils.cache import cached_or_fetch, invalidate

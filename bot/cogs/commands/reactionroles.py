@@ -20,7 +20,18 @@ import sqlite3
 class ReactionRoles(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db = "rr.db"
+        # Unify database storage under db/
+        import os
+        legacy_path = "rr.db"
+        standard_path = os.path.join("db", "rr.db")
+        if os.path.exists(legacy_path) and not os.path.exists(standard_path):
+            try:
+                import shutil
+                os.makedirs("db", exist_ok=True)
+                shutil.move(legacy_path, standard_path)
+            except Exception:
+                pass
+        self.db = standard_path if os.path.exists(standard_path) or os.path.exists("db") else legacy_path
         self._create_table()
 
     def _create_table(self):

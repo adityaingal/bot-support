@@ -73,6 +73,16 @@ services:
       - key: RENDER_DISK_PATH
         sync: false
 
+      # --- Database Discord Webhook Persistence (Free Tier) ---
+      # Set this to a Discord webhook URL in your private staff/backup channel
+      # to automatically persist & recover all SQLite databases without a paid disk.
+      - key: DB_BACKUP_WEBHOOK_URL
+        sync: false
+      - key: DB_BACKUP_INTERVAL
+        value: "1800"
+      - key: DB_BACKUP_AUTO_RESTORE
+        value: "true"
+
     # Uncomment this block if using a paid plan with persistent disk storage for SQLite:
     # disk:
     #   name: support-data

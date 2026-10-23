@@ -48,7 +48,10 @@ import threading
 import subprocess
 
 # ── env vars ──────────────────────────────────────────────────────────────────
-TUNNEL_ENABLED = os.getenv("TUNNEL_ENABLED", "true").strip().lower() == "true"
+# Render provides public HTTPS endpoints natively; Cloudflare tunnel is only for local dev/Pterodactyl
+IS_RENDER = bool(os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_EXTERNAL_URL"))
+_default_tunnel = "false" if IS_RENDER else "false"
+TUNNEL_ENABLED = os.getenv("TUNNEL_ENABLED", _default_tunnel).strip().lower() == "true"
 CF_TUNNEL_TOKEN = os.getenv("CF_TUNNEL_TOKEN", "").strip()   # token from Cloudflare dashboard
 CF_TUNNEL_URL   = os.getenv("CF_TUNNEL_URL", "").strip()     # e.g. https://api.yourdomain.com
 API_PORT        = int(os.getenv("API_PORT", "8000"))
@@ -243,7 +246,8 @@ def _run_tunnel(binary: str, token: str, port: int, public_url: str) -> None:
     """
     Blocking loop — runs:
       cloudflared tunnel --no-autoupdate run --token <token>
-    Restarts automatically if the process exits.
+    Restarts automatically if the process exits, but stops if token is invalid (code 255)
+    or if it repeatedly crashes on startup to prevent infinite loops.
     """
     cmd = [
         binary,
@@ -255,6 +259,7 @@ def _run_tunnel(binary: str, token: str, port: int, public_url: str) -> None:
     ]
 
     first_run = True
+    consecutive_fast_crashes = 0
     while True:
         if first_run:
             print(f"{_CYAN}◈ Tunnel: connecting to Cloudflare…{_RESET}")
@@ -262,6 +267,7 @@ def _run_tunnel(binary: str, token: str, port: int, public_url: str) -> None:
         else:
             print(f"{_YELLOW}◈ Tunnel: reconnecting…{_RESET}")
 
+        start_time = time.time()
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -284,6 +290,7 @@ def _run_tunnel(binary: str, token: str, port: int, public_url: str) -> None:
                 # Announce the live URL once the tunnel is up
                 if not announced and ("registered tunnel connection" in low or "connection registered" in low):
                     announced = True
+                    consecutive_fast_crashes = 0
                     if public_url:
                         print(f"{_GREEN}◈ Tunnel: API is live at  {public_url}{_RESET}")
                         print(f"{_CYAN}  ↳ NEXT_PUBLIC_API_URL = {public_url}/api/v1{_RESET}")
@@ -301,8 +308,23 @@ def _run_tunnel(binary: str, token: str, port: int, public_url: str) -> None:
             print(f"{_RED}◈ Tunnel: unexpected error — {exc}{_RESET}")
             code = -1
 
-        print(f"{_YELLOW}◈ Tunnel: exited (code {code}), restarting in 5 s…{_RESET}")
-        time.sleep(5)
+        uptime = time.time() - start_time
+        if uptime < 15:
+            consecutive_fast_crashes += 1
+        else:
+            consecutive_fast_crashes = 0
+
+        # Code 255 indicates invalid tunnel token or bad flags — cannot recover by simply restarting
+        if code == 255:
+            print(f"{_RED}◈ Tunnel: cloudflared exited with code 255 (invalid/expired CF_TUNNEL_TOKEN). Tunnel stopped.{_RESET}")
+            return
+
+        if consecutive_fast_crashes >= 3:
+            print(f"{_RED}◈ Tunnel: crashed 3 times in a row on launch. Tunnel stopped to prevent log spam.{_RESET}")
+            return
+
+        print(f"{_YELLOW}◈ Tunnel: exited (code {code}), restarting in 10 s…{_RESET}")
+        time.sleep(10)
 
 
 def start_tunnel() -> None:
@@ -310,13 +332,18 @@ def start_tunnel() -> None:
     Start the Cloudflare Tunnel in a background daemon thread.
     Called from CodeX.py after keep_alive().
     """
+    if IS_RENDER:
+        print(f"{_YELLOW}◈ Tunnel: running on Render (public HTTPS provided directly by Render) — tunnel disabled.{_RESET}")
+        return
+
     if not TUNNEL_ENABLED:
         print(f"{_YELLOW}◈ Tunnel: disabled via TUNNEL_ENABLED=false{_RESET}")
         return
 
-    if not CF_TUNNEL_TOKEN:
+    placeholder_tokens = {"xxx_xxxx", "your_tunnel_token", "eyjhijoi...", "token_here", "none"}
+    if not CF_TUNNEL_TOKEN or CF_TUNNEL_TOKEN.lower() in placeholder_tokens or len(CF_TUNNEL_TOKEN) < 25:
         print(
-            f"{_YELLOW}◈ Tunnel: CF_TUNNEL_TOKEN is not set — tunnel skipped.\n"
+            f"{_YELLOW}◈ Tunnel: CF_TUNNEL_TOKEN is not configured or placeholder — tunnel skipped.\n"
             f"  Get your token from https://one.dash.cloudflare.com → Networks → Tunnels{_RESET}"
         )
         return

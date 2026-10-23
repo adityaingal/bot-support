@@ -876,14 +876,24 @@ class Extra(commands.Cog):
   @blacklist_check()
   @commands.cooldown(1, 3, commands.BucketType.user)
   async def ping(self, ctx: commands.Context):
-    """Shows the bot's WebSocket, API, and Database latencies."""
-    
-    # 1. Start timer and send an initial "Pinging..." message
+    """Shows the bot's latency for members, and full diagnostics for developers."""
+    from utils.config import OWNER_IDS, DEV_ID
+    allowed_dev_ids = set(OWNER_IDS)
+    if DEV_ID and str(DEV_ID).strip().isdigit():
+        allowed_dev_ids.add(int(DEV_ID))
+    is_dev = ctx.author.id in allowed_dev_ids
+
+    bot_latency = round(self.bot.latency * 1000)
+
+    # Normal members only see bot ping
+    if not is_dev:
+        return await ctx.send(view=CV2("Pong!", f"**Bot Latency:** `{bot_latency}ms`"))
+
+    # Developers get full system latency (Bot + API roundtrip + Database)
     start_time = time.monotonic()
     msg = await ctx.send(view=CV2("Checking Latency...", "Calculating response times, please wait."))
     end_time = time.monotonic()
 
-    bot_latency = round(self.bot.latency * 1000)
     api_latency = round((end_time - start_time) * 1000)
     
     db_latency = "Not Available"
@@ -894,14 +904,14 @@ class Extra(commands.Cog):
             db_end_time = time.perf_counter()
             db_latency = f"{round((db_end_time - db_start_time) * 1000)}ms"
     except Exception as e:
-        print(f"Database latency check failed: {e}")
+        db_latency = f"Error: {e}"
 
     latency_text = (
         f"**Bot (WebSocket):** `{bot_latency}ms`\n"
         f"**API (Roundtrip):** `{api_latency}ms`\n"
         f"**Database:** `{db_latency}`"
     )
-    await msg.edit(view=CV2("System Latency Report", latency_text))
+    await msg.edit(view=CV2("System Latency Report (Dev)", latency_text))
 
 
 

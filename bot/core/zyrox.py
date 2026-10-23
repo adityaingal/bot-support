@@ -23,7 +23,7 @@ import typing
 from typing import List
 import aiosqlite
 from utils.config import OWNER_IDS, BotName
-from utils import getConfig, updateConfig
+from utils.Tools import getConfig, updateConfig
 from utils.cache import cached_or_fetch
 from .Context import Context
 from colorama import Fore, Style, init
@@ -223,7 +223,7 @@ class zyrox(commands.AutoShardedBot):
                 return
             if ctx.command is None:
                 return
-            if type(ctx.channel) == "public_thread":
+            if isinstance(ctx.channel, discord.Thread):
                 return
             await self.invoke(ctx)
 

@@ -92,9 +92,17 @@ Render will build and launch both services automatically:
    - Webpack caching in `next.config.js` is tuned to prevent out-of-memory errors on Render's 512MB RAM free tier.
    - `requirements.txt` has been purged of heavy, conflicting, and obsolete packages for blazing fast builds.
 
-4. **Database Persistence (Optional Paid Feature)**:
-   - On the Free tier, Render's filesystem is ephemeral (resets on deploy).
-   - If you upgrade to a paid Starter plan, uncomment the `disk:` block in `render.yaml` and set `RENDER_DISK_PATH: /var/data` to persist all 36 SQLite databases permanently.
+4. **Database Persistence (Paid Plans)**:
+   - On paid Starter plans, you can uncomment the `disk:` block in `render.yaml` and set `RENDER_DISK_PATH: /var/data` to persist all SQLite databases on a Render disk.
+
+5. **Free Tier Database Persistence via Discord Webhook (Zero Cost)**:
+   - On the Free tier where disks are ephemeral, you don't need to pay for a disk.
+   - Simply set `DB_BACKUP_WEBHOOK_URL` to a Discord webhook in your private staff channel.
+   - The bot automatically:
+     - Archives all 38 SQLite databases (`db/*.db`, `jsondb/*.json`, `j2c_data.db`, `rr.db`) and uploads them to the webhook every 30 minutes.
+     - Performs a clean final backup whenever Render deploys or restarts (`SIGTERM` graceful shutdown).
+     - **Auto-restores** the latest backup from Discord on startup if local databases are missing/empty.
+   - You can also trigger backups manually from Discord using `>backup now` or `>backup restore`.
 
 ---
 
