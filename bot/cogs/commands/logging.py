@@ -1425,6 +1425,11 @@ class Logging(commands.Cog):
 
             channel = guild.get_channel(log_channel_id)
             if not channel:
+                try:
+                    channel = await guild.fetch_channel(log_channel_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    channel = None
+            if not channel:
                 logger.warning(
                     f"Log channel {log_channel_id} not found in guild {guild.id}"
                 )
