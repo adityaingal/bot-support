@@ -14,6 +14,8 @@ import yaml
 import json
 import os
 
+from utils.jsonio import load_json
+
 # Config load
 with open('config.yml', 'r', encoding='utf-8') as config_file:
     config = yaml.safe_load(config_file)
@@ -51,7 +53,4 @@ def load_instructions() -> dict:
     return instructions
 
 def load_active_channels() -> dict:
-    if os.path.exists("channels.json"):
-        with open("channels.json", "r", encoding='utf-8') as f:
-            active_channels = json.load(f)
-    return active_channels
+    return load_json("channels.json")

@@ -12,12 +12,11 @@
 
 import discord
 from discord.ext import commands, tasks
-import json
 import datetime
 import asyncio
-import os
 from discord.ui import LayoutView, TextDisplay, Separator, Container
 from utils.cv2 import CV2, build_container
+from utils.jsonio import load_json, save_json
 
 class CV2(LayoutView):
     def __init__(self, title, *sections):
@@ -30,16 +29,12 @@ class CV2(LayoutView):
         self.add_item(build_container(*items))
 
 def read_db(filename):
-    """Read the JSON database file."""
-    if os.path.exists(filename):
-        with open(filename, 'r') as f:
-            return json.load(f)
-    return {}
+    """Read the JSON database file (encoding-tolerant, never raises)."""
+    return load_json(filename)
 
 def write_db(filename, data):
     """Write data to the JSON database file."""
-    with open(filename, 'w') as f:
-        json.dump(data, f, indent=4)
+    save_json(filename, data)
 
 class Birthdays(commands.Cog):
     """Handle birthday notifications and setup."""

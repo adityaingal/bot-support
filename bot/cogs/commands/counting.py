@@ -14,10 +14,10 @@ import discord
 from utils.emoji import ARROWRED, CROSS, NEXT_ALT1, REDRULESBOOK, RED_BUTTON, RED_PIN, STAR, TICK, ZBACK, ZPAUSE, ZPLAY, ZWARNING
 from discord.ext import commands
 import json
-import os
 import asyncio
 from discord.ui import LayoutView, TextDisplay, Separator, Container
 from utils.cv2 import CV2, build_container
+from utils.jsonio import load_json
 
 
 
@@ -40,14 +40,10 @@ class Counting(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.data_file = "db/counting.json"
-        if not os.path.exists(self.data_file):
-            with open(self.data_file, 'w') as f:
-                json.dump({}, f)
-        with open(self.data_file, 'r') as f:
-            self.counting_data = json.load(f)
+        self.counting_data = load_json(self.data_file)
 
     def _write_data(self, payload):
-        with open(self.data_file, 'w') as f:
+        with open(self.data_file, 'w', encoding='utf-8', newline='\n') as f:
             f.write(payload)
 
     async def save_data(self):

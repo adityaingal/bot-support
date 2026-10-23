@@ -15,13 +15,13 @@ from discord.ext import commands
 from discord import *
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import discord
-import json
 import datetime
 import asyncio
 import aiosqlite
 from typing import Optional
 from utils import Paginator, DescriptionEmbedPaginator, FieldPagePaginator, TextPaginator
 from utils.Tools import *
+from utils.jsonio import load_json, save_json
 from utils.config import OWNER_IDS, BOT_OWNER_IDS
 from utils.emoji import BOOSTS, DISCORD_BADGE_EMOJIS, LOADINGRED, NITRO_BOOST, TICK, ZWARNING
 from core import Cog, zyrox, Context
@@ -280,23 +280,20 @@ class Owner(commands.Cog):
     @commands.is_owner()
     async def _sync(self, ctx):
         await ctx.reply("Syncing...", mention_author=False)
-        with open('events.json', 'r') as f:
-            data = json.load(f)
+        events_path = 'events.json'
+        data = load_json(events_path, {"guilds": {}})
+        guilds = data.setdefault('guilds', {})
         for guild in self.client.guilds:
-            if str(guild.id) not in data['guild']:
-                data['guilds'][str(guild.id)] = 'on'
-                with open('events.json', 'w') as f:
-                    json.dump(data, f, indent=4)
-            else:
-                pass
-        with open('config.json', 'r') as f:
-            data = json.load(f)
-        for op in data["guilds"]:
+            if str(guild.id) not in guilds:
+                guilds[str(guild.id)] = 'on'
+                save_json(events_path, data)
+        config_path = 'config.json'
+        data = load_json(config_path, {"guilds": {}})
+        for op in list(data.get("guilds", {})):
             g = self.client.get_guild(int(op))
             if not g:
                 data["guilds"].pop(str(op))
-                with open('config.json', 'w') as f:
-                    json.dump(data, f, indent=4)
+                save_json(config_path, data)
 
 
     @commands.command(name="owners")

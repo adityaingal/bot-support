@@ -13,8 +13,8 @@
 import discord
 from utils.emoji import BLOBPART
 from discord.ext import commands
-import json
 from utils.cv2 import CV2
+from utils.jsonio import load_json, save_json
 
 class joindm(commands.Cog):
     def __init__(self, bot):
@@ -24,16 +24,11 @@ class joindm(commands.Cog):
 
     def load_joindm_messages(self):
         # Load the join DM messages from file
-        try:
-            with open('jsondb/joindm_messages.json', 'r') as f:
-                self.joindm_messages = json.load(f)
-        except FileNotFoundError:
-            self.joindm_messages = {}
+        self.joindm_messages = load_json('jsondb/joindm_messages.json')
 
     def save_joindm_messages(self):
         # Save the join DM messages to file
-        with open('jsondb/joindm_messages.json', 'w') as f:
-            json.dump(self.joindm_messages, f)
+        save_json('jsondb/joindm_messages.json', self.joindm_messages)
 
     @commands.group(invoke_without_command=True)
     @commands.has_permissions(administrator=True)

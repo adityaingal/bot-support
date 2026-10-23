@@ -10,11 +10,12 @@
 # ║                                                                  ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
-import json, sys, os
+import sys, os
 import discord
 from discord.ext import commands
 from core import Context
 from utils.emoji import DENIED
+from utils.jsonio import load_json, save_json
 import aiosqlite
 import asyncio
 
@@ -40,15 +41,10 @@ async def is_topcheck_enabled(guild_id: int):
 
 
 def read_json(file_path):
-    try:
-        with open(file_path, "r") as file:
-            return json.load(file)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"guilds": {}}
+    return load_json(file_path, {"guilds": {}})
 
 def write_json(file_path, data):
-    with open(file_path, "w") as file:
-        json.dump(data, file, indent=4, ensure_ascii=False)
+    save_json(file_path, data)
 
 def get_or_create_guild_config(file_path, guild_id, default_config):
     data = read_json(file_path)
