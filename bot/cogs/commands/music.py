@@ -170,7 +170,7 @@ class SearchResultView(LayoutView):
 
             track = self.results[index]
             vc = self.ctx.voice_client
-            if vc is None or not vc.is_connected():
+            if vc is None or not vc.connected:
                 if not self.ctx.author.voice:
                     await interaction.response.send_message(
                         "You need to be in a voice channel first.", ephemeral=True)
@@ -448,7 +448,7 @@ class Music(commands.Cog):
                 existing = guild.voice_client
                 if (isinstance(e, discord.ClientException)
                         and existing is not None
-                        and existing.is_connected()):
+                        and existing.connected):
                     raise
                 last_error = e
                 if attempt == attempts - 1:
@@ -618,7 +618,7 @@ class Music(commands.Cog):
             return
 
         vc = ctx.voice_client
-        if vc is None or not vc.is_connected():
+        if vc is None or not vc.connected:
             if await self.wait_for_node() is None:
                 await ctx.send(view=CV2(f"{WARNING} The music node isn't ready yet — try again in a few seconds."))
                 return
@@ -1102,7 +1102,7 @@ class Music(commands.Cog):
         vc = ctx.voice_client
 
         # Already connected to the channel the user is in — nothing to do.
-        if vc and vc.is_connected() and vc.channel and vc.channel.id == target.id:
+        if vc and vc.connected and vc.channel and vc.channel.id == target.id:
             await ctx.send(view=CV2("I'm already connected to this voice channel."))
             return
 
@@ -1111,7 +1111,7 @@ class Music(commands.Cog):
             return
 
         try:
-            if vc and vc.is_connected():
+            if vc and vc.connected:
                 # Connected elsewhere in this guild — move instead of reconnecting.
                 await vc.move_to(target)
                 await ctx.send(view=CV2("Moved to your voice channel."))
