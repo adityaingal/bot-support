@@ -12,16 +12,25 @@
 
 import discord
 import json
+import sys
 import traceback
 import aiosqlite
 from discord.ext import commands
 from utils.config import serverLink
 from core import zyrox, Cog, Context
 from utils.Tools import get_ignore_data
+from utils.cloudbreaker import CloudflareBanError
 
 class Errors(Cog):
   def __init__(self, client: zyrox):
     self.client = client
+
+  @commands.Cog.listener()
+  async def on_error(self, event_method, *args, **kwargs):
+    exc = sys.exc_info()[1]
+    if isinstance(exc, CloudflareBanError):
+      return
+    print(f"[ERROR] Unhandled event exception in {event_method}: {exc!r}", flush=True)
 
   @commands.Cog.listener()
   async def on_command_error(self, ctx: Context, error):
@@ -40,6 +49,10 @@ class Errors(Cog):
       return
 
     if isinstance(error, commands.CommandNotFound):
+      return
+
+    if isinstance(error, CloudflareBanError):
+      print(f"[cloudbreaker] Command {ctx.command} suppressed: {error}", flush=True)
       return
 
     if isinstance(error, commands.MissingRequiredArgument):
