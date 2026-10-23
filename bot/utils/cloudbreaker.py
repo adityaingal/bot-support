@@ -56,14 +56,14 @@ def install() -> None:
 
     _orig = discord.http.HTTPClient.request
 
-    async def patched(self, method, url, **kwargs):
+    async def patched(self, route, **kwargs):
         if is_banned():
             raise CloudflareBanError(
                 f"Discord REST call suppressed: Cloudflare 1015 ban active "
                 f"({seconds_left():.0f}s remaining)"
             )
         try:
-            result = await _orig(self, method, url, **kwargs)
+            result = await _orig(self, route, **kwargs)
         except discord.HTTPException as exc:
             status = getattr(exc, "status", None)
             body = str(getattr(exc, "text", "") or "")
