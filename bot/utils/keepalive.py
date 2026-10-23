@@ -22,10 +22,13 @@ from typing import Optional
 from utils.http import http_client
 
 def _resolve_keepalive_url() -> str:
+    render_url = (os.getenv("RENDER_EXTERNAL_URL") or "").strip()
     url = (os.getenv("KEEPALIVE_URL") or "").strip()
+    # If on Render, automatically use the actual active external URL if KEEPALIVE_URL is empty or pointing to an obsolete service
+    if render_url and (not url or "bot-support-aauu" in url or "yourdomain" in url):
+        return f"{render_url.rstrip('/')}/health"
     if url:
         return url
-    render_url = (os.getenv("RENDER_EXTERNAL_URL") or "").strip()
     if render_url:
         return f"{render_url.rstrip('/')}/health"
     port = os.getenv("PORT") or os.getenv("API_PORT") or "8000"
