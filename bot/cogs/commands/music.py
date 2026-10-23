@@ -529,7 +529,12 @@ class Music(commands.Cog):
         if env_host:
             password = os.getenv("LAVALINK_PASSWORD", "youshallnotpass")
             secure = os.getenv("LAVALINK_SECURE", "true").strip().lower() == "true"
-            candidates = [(env_host, password, secure, os.getenv("LAVALINK_PORT", "").strip())]
+            env_candidate = (env_host, password, secure, os.getenv("LAVALINK_PORT", "").strip())
+            # Env node first (explicit config wins), but never a dead end:
+            # public nodes die, so fall through to the built-in list on failure.
+            candidates = [env_candidate] + [
+                c for c in self.LAVALINK_CANDIDATES if c[0] != env_host
+            ]
         else:
             candidates = list(self.LAVALINK_CANDIDATES)
 
