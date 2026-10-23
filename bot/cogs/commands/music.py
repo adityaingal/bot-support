@@ -500,6 +500,22 @@ class Music(commands.Cog):
                 except:
                     pass
 
+    # Public Lavalink nodes die often. Candidates are tried in order until one
+    # connects; env vars override the primary (LAVALINK_HOST/PASSWORD/...).
+    LAVALINK_CANDIDATES = [
+        # (host, password, secure, port)
+        ("lavalink.nazha.online", "nazhafreelava", True, ""),
+        ("lavalink.jirayu.net", "youshallnotpass", True, ""),
+        ("lavalink-v4.triniumhost.com", "free", True, ""),
+        ("lavalink.serenetia.com", "https://dsc.gg/ajidevserver", True, ""),
+    ]
+
+    @staticmethod
+    def _node_uri(host: str, secure: bool, port: str) -> str:
+        if secure:
+            return f"https://{host}"
+        return f"http://{host}:{port}" if port else f"http://{host}"
+
     async def connect_nodes(self) -> None:
         # wavelink builds its handshake headers from client.user (it asserts),
         # so connecting before login just fails and burns retry/backoff time
@@ -509,45 +525,51 @@ class Music(commands.Cog):
         except Exception:
             pass
 
-        host = os.getenv("LAVALINK_HOST", "lava-v4.ajieblogs.eu.org")
-        password = os.getenv("LAVALINK_PASSWORD", "https://dsc.gg/ajidevserver")
-        secure = os.getenv("LAVALINK_SECURE", "true").strip().lower() == "true"
-        port = os.getenv("LAVALINK_PORT", "").strip()
-
-        if secure:
-            uri = f"https://{host}"
+        env_host = os.getenv("LAVALINK_HOST")
+        if env_host:
+            password = os.getenv("LAVALINK_PASSWORD", "youshallnotpass")
+            secure = os.getenv("LAVALINK_SECURE", "true").strip().lower() == "true"
+            candidates = [(env_host, password, secure, os.getenv("LAVALINK_PORT", "").strip())]
         else:
-            uri = f"http://{host}:{port}" if port else f"http://{host}"
+            candidates = list(self.LAVALINK_CANDIDATES)
 
-        node = wavelink.Node(uri=uri, password=password)
+        nodes = [
+            wavelink.Node(uri=self._node_uri(host, secure, port), password=pwd)
+            for host, pwd, secure, port in candidates
+        ]
         # Reference kept on the bot so graceful shutdown can close the node's
         # aiohttp session (wavelink.Pool.close() does not close it).
-        self.client.lavalink_node = node
+        self.client.lavalink_node = nodes[0]
 
         connect_task = asyncio.create_task(
-            wavelink.Pool.connect(nodes=[node], client=self.client, cache_capacity=None)
+            wavelink.Pool.connect(nodes=nodes, client=self.client, cache_capacity=None)
         )
         done, _ = await asyncio.wait({connect_task}, timeout=120)
         if not done:
             print(
-                f"[Music] Lavalink not reachable after 120s -> {uri} "
-                "(wavelink keeps retrying in background)",
+                "[Music] Lavalink not reachable after 120s "
+                f"({len(nodes)} candidates) - wavelink keeps retrying in background",
                 flush=True,
             )
             await connect_task
 
         exc = connect_task.exception()
         if exc is not None:
-            print(f"[Music] Lavalink connect error -> {uri}: {type(exc).__name__}: {exc}", flush=True)
+            print(f"[Music] Lavalink connect error: {type(exc).__name__}: {exc}", flush=True)
             return
 
         # Pool.connect logs-and-skips auth/version failures instead of raising,
         # so a missing node here means the server rejected us.
-        if node.identifier not in wavelink.Pool.nodes:
-            print(
-                f"[Music] Lavalink node rejected -> {uri} (bad password or non-Lavalink-v4 server?)",
-                flush=True,
-            )
+        for node in nodes:
+            if node.identifier in wavelink.Pool.nodes:
+                print(f"[Music] Lavalink node connected: {node.uri}", flush=True)
+                return
+        print(
+            "[Music] All Lavalink candidates rejected "
+            f"(bad password or non-Lavalink-v4 server?): "
+            f"{', '.join(n.uri for n in nodes)}",
+            flush=True,
+        )
 
 
     async def display_player_embed(self, player, track, ctx, autoplay=False):
