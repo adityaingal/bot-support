@@ -24,6 +24,7 @@ from typing import List
 import aiosqlite
 from utils.config import OWNER_IDS, BotName
 from utils import getConfig, updateConfig
+from utils.cache import cached_or_fetch
 from .Context import Context
 from colorama import Fore, Style, init
 import importlib
@@ -190,23 +191,27 @@ class zyrox(commands.AutoShardedBot):
         async for msg in channel.history(limit=1, before=discord.Object(messageID + 1), after=discord.Object(messageID - 1)):
             return msg
 
+    async def _is_np(self, user_id: int) -> bool:
+        async def _fetch():
+            async with aiosqlite.connect('db/np.db') as db:
+                async with db.execute("SELECT id FROM np WHERE id = ?", (user_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    return row is not None
+        return await cached_or_fetch("np", _fetch, user_id, ttl=60.0)
+
     async def get_prefix(self, message: discord.Message):
         if message.guild:
             guild_id = message.guild.id
-            async with aiosqlite.connect('db/np.db') as db:
-                async with db.execute("SELECT id FROM np WHERE id = ?", (message.author.id,)) as cursor:
-                    row = await cursor.fetchone()
+            is_np = await self._is_np(message.author.id)
             data = await getConfig(guild_id)
             prefix = data["prefix"]
-            if row:
+            if is_np:
                 return commands.when_mentioned_or(prefix, '')(self, message)
             else:
                 return commands.when_mentioned_or(prefix)(self, message)
         else:
-            async with aiosqlite.connect('db/np.db') as db:
-                async with db.execute("SELECT id FROM np WHERE id = ?", (message.author.id,)) as cursor:
-                    row = await cursor.fetchone()
-            if row:
+            is_np = await self._is_np(message.author.id)
+            if is_np:
                 return commands.when_mentioned_or('?', '')(self, message)
             else:
                 return commands.when_mentioned_or('')(self, message)

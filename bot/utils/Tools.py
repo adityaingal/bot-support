@@ -16,8 +16,10 @@ from discord.ext import commands
 from core import Context
 from utils.emoji import DENIED
 from utils.jsonio import load_json, save_json
+from utils.cache import cached_or_fetch, invalidate
 import aiosqlite
 import asyncio
+
 
 async def setup_db():
   async with aiosqlite.connect('db/prefix.db') as db:
@@ -30,13 +32,13 @@ async def setup_db():
     await db.commit()
 
 
-asyncio.run(setup_db())
-
 async def is_topcheck_enabled(guild_id: int):
-    async with aiosqlite.connect('db/topcheck.db') as db:
-        async with db.execute("SELECT enabled FROM topcheck WHERE guild_id = ?", (guild_id,)) as cursor:
-            row = await cursor.fetchone()
-            return row is not None and row[0] == 1
+    async def _fetch():
+        async with aiosqlite.connect('db/topcheck.db') as db:
+            async with db.execute("SELECT enabled FROM topcheck WHERE guild_id = ?", (guild_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row is not None and row[0] == 1
+    return await cached_or_fetch("topcheck", _fetch, guild_id, ttl=60.0)
             
 
 
@@ -84,15 +86,17 @@ def updateignore(guild_id, data):
 
 
 async def getConfig(guildID):
-  async with aiosqlite.connect('db/prefix.db') as db:
-    async with db.execute("SELECT prefix FROM prefixes WHERE guild_id = ?", (guildID,)) as cursor:
-      row = await cursor.fetchone()
-      if row:
-        return {"prefix": row[0]}
-      else:
-        defaultConfig = {"prefix": ">"}
-        await updateConfig(guildID, defaultConfig)
-        return defaultConfig
+  async def _fetch():
+    async with aiosqlite.connect('db/prefix.db') as db:
+      async with db.execute("SELECT prefix FROM prefixes WHERE guild_id = ?", (guildID,)) as cursor:
+        row = await cursor.fetchone()
+        if row:
+          return {"prefix": row[0]}
+        else:
+          defaultConfig = {"prefix": ">"}
+          await updateConfig(guildID, defaultConfig)
+          return defaultConfig
+  return await cached_or_fetch("prefix", _fetch, guildID, ttl=60.0)
 
 async def updateConfig(guildID, data):
   async with aiosqlite.connect('db/prefix.db') as db:
@@ -101,6 +105,7 @@ async def updateConfig(guildID, data):
       (guildID, data["prefix"])
     )
     await db.commit()
+  invalidate("prefix", guildID)
 
 
 
@@ -112,48 +117,56 @@ def restart_program():
 def blacklist_check():
 
   async def predicate(ctx):
-    async with aiosqlite.connect('db/block.db') as db:
-      cursor = await db.execute("SELECT 1 FROM user_blacklist WHERE user_id = ?", (str(ctx.author.id),))
-      user_blacklisted = await cursor.fetchone()
-      if user_blacklisted:
-        return False
+    async def _check():
+      async with aiosqlite.connect('db/block.db') as db:
+        cursor = await db.execute("SELECT 1 FROM user_blacklist WHERE user_id = ?", (str(ctx.author.id),))
+        user_blacklisted = await cursor.fetchone()
+        if user_blacklisted:
+          return False
 
-      cursor = await db.execute("SELECT 1 FROM guild_blacklist WHERE guild_id = ?", (str(ctx.guild.id),))
-      guild_blacklisted = await cursor.fetchone()
-      if guild_blacklisted:
-        return False
+        cursor = await db.execute("SELECT 1 FROM guild_blacklist WHERE guild_id = ?", (str(ctx.guild.id),))
+        guild_blacklisted = await cursor.fetchone()
+        if guild_blacklisted:
+          return False
 
-    return True
+      return True
+
+    return await cached_or_fetch(
+      "block", _check, ctx.author.id, ctx.guild.id, ttl=30.0
+    )
 
   return commands.check(predicate)
     
 
 async def get_ignore_data(guild_id: int) -> dict:
-    async with aiosqlite.connect("db/ignore.db") as db:
-        data = {
-            "channel": set(),
-            "user": set(),
-            "command": set(),
-            "bypassuser": set(),
-        }
+    async def _fetch():
+        async with aiosqlite.connect("db/ignore.db") as db:
+            data = {
+                "channel": set(),
+                "user": set(),
+                "command": set(),
+                "bypassuser": set(),
+            }
 
-        async with db.execute("SELECT channel_id FROM ignored_channels WHERE guild_id = ?", (guild_id,)) as cursor:
-            channels = await cursor.fetchall()
-            data["channel"] = {str(channel_id) for (channel_id,) in channels}
+            async with db.execute("SELECT channel_id FROM ignored_channels WHERE guild_id = ?", (guild_id,)) as cursor:
+                channels = await cursor.fetchall()
+                data["channel"] = {str(channel_id) for (channel_id,) in channels}
 
-        async with db.execute("SELECT user_id FROM ignored_users WHERE guild_id = ?", (guild_id,)) as cursor:
-            users = await cursor.fetchall()
-            data["user"] = {str(user_id) for (user_id,) in users}
+            async with db.execute("SELECT user_id FROM ignored_users WHERE guild_id = ?", (guild_id,)) as cursor:
+                users = await cursor.fetchall()
+                data["user"] = {str(user_id) for (user_id,) in users}
 
-        async with db.execute("SELECT command_name FROM ignored_commands WHERE guild_id = ?", (guild_id,)) as cursor:
-            commands = await cursor.fetchall()
-            data["command"] = {command_name.strip().lower() for (command_name,) in commands}
+            async with db.execute("SELECT command_name FROM ignored_commands WHERE guild_id = ?", (guild_id,)) as cursor:
+                commands = await cursor.fetchall()
+                data["command"] = {command_name.strip().lower() for (command_name,) in commands}
 
-        async with db.execute("SELECT user_id FROM bypassed_users WHERE guild_id = ?", (guild_id,)) as cursor:
-            bypass_users = await cursor.fetchall()
-            data["bypassuser"] = {str(user_id) for (user_id,) in bypass_users}
+            async with db.execute("SELECT user_id FROM bypassed_users WHERE guild_id = ?", (guild_id,)) as cursor:
+                bypass_users = await cursor.fetchall()
+                data["bypassuser"] = {str(user_id) for (user_id,) in bypass_users}
 
-    return data
+        return data
+
+    return await cached_or_fetch("ignore", _fetch, guild_id, ttl=60.0)
 
 def ignore_check():
     async def predicate(ctx):

@@ -17,6 +17,7 @@ import aiosqlite
 import asyncio
 from datetime import timedelta
 import re
+from utils import automod_cache
 
 class AntiLink(commands.Cog):
     def __init__(self, bot):
@@ -27,16 +28,19 @@ class AntiLink(commands.Cog):
         self.spotify_pattern = re.compile(r'^https://open\.spotify\.com/track/\S+')
 
     async def is_automod_enabled(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT enabled FROM automod WHERE guild_id = ?", (guild_id,))
-            result = await cursor.fetchone()
-            return result is not None and result[0] == 1
+        return await automod_cache.is_automod_enabled(guild_id)
 
     async def is_anti_link_enabled(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT punishment FROM automod_punishments WHERE guild_id = ? AND event = 'Anti link'", (guild_id,))
-            result = await cursor.fetchone()
-            return result is not None
+        return await automod_cache.is_module_enabled(guild_id, 'Anti link')
+
+    async def get_ignored_channels(self, guild_id):
+        return await automod_cache.get_ignored_channels(guild_id)
+
+    async def get_ignored_roles(self, guild_id):
+        return await automod_cache.get_ignored_roles(guild_id)
+
+    async def get_punishment(self, guild_id):
+        return await automod_cache.get_punishment(guild_id, 'Anti link')
 
     async def get_ignored_channels(self, guild_id):
         async with aiosqlite.connect("db/automod.db") as db:

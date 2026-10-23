@@ -16,6 +16,7 @@ from discord.ext import commands
 import aiosqlite
 from datetime import timedelta
 import asyncio
+from utils import automod_cache
 
 class AntiMassMention(commands.Cog):
     def __init__(self, bot):
@@ -23,32 +24,19 @@ class AntiMassMention(commands.Cog):
         self.mass_mention_threshold = 5
 
     async def is_automod_enabled(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT enabled FROM automod WHERE guild_id = ?", (guild_id,))
-            result = await cursor.fetchone()
-            return result is not None and result[0] == 1
+        return await automod_cache.is_automod_enabled(guild_id)
 
     async def is_anti_mass_mention_enabled(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT punishment FROM automod_punishments WHERE guild_id = ? AND event = 'Anti mass mention'", (guild_id,))
-            result = await cursor.fetchone()
-            return result is not None
+        return await automod_cache.is_module_enabled(guild_id, 'Anti mass mention')
 
     async def get_ignored_channels(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT id FROM automod_ignored WHERE guild_id = ? AND type = 'channel'", (guild_id,))
-            return [row[0] for row in await cursor.fetchall()]
+        return await automod_cache.get_ignored_channels(guild_id)
 
     async def get_ignored_roles(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT id FROM automod_ignored WHERE guild_id = ? AND type = 'role'", (guild_id,))
-            return [row[0] for row in await cursor.fetchall()]
+        return await automod_cache.get_ignored_roles(guild_id)
 
     async def get_punishment(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT punishment FROM automod_punishments WHERE guild_id = ? AND event = 'Anti mass mention'", (guild_id,))
-            result = await cursor.fetchone()
-            return result[0] if result else None
+        return await automod_cache.get_punishment(guild_id, 'Anti mass mention')
 
 
     async def log_action(self, guild, user, channel, action, reason):
