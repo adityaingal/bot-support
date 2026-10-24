@@ -108,7 +108,7 @@ async def run_sync(token: str) -> None:
     Triggers an automatic restart when emoji.py is patched.
     """
     # ── Toggle check ──────────────────────────────────────────────────────────
-    enabled = os.getenv("EMOJI_SYNC", "true").strip().lower()
+    enabled = os.getenv("EMOJI_SYNC", "false").strip().lower()
     if enabled != "true":
         info(f"Disabled via EMOJI_SYNC={enabled!r} — skipping.")
         return

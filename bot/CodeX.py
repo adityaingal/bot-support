@@ -225,7 +225,7 @@ from utils.http import http_client, describe_http_failure, log_discord_once
 from utils import cloudbreaker
 from utils.cloudbreaker import CloudflareBanError
 
-# cloudbreaker.install()  # Disabled - direct Discord API access
+cloudbreaker.install()
 
 # Reuse a small set of persistent aiosqlite connections instead of spawning a
 # new worker thread + file open for every query. Each message used to open
@@ -364,7 +364,7 @@ async def update_stats():
         except Exception as e:
             log_warning(f"Stats update skipped: {e!r}")
         
-        await asyncio.sleep(600) # Update every 10 minutes
+        await asyncio.sleep(1800) # Update every 30 minutes
 
 
 async def sync_commands():

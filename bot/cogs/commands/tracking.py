@@ -59,6 +59,7 @@ class Tracking(commands.Cog):
         import asyncio
         from utils.http import log_discord_once
 
+        await asyncio.sleep(15)
         for guild in self.bot.guilds:
             try:
                 self.invites[guild.id] = await guild.invites()
@@ -73,7 +74,7 @@ class Tracking(commands.Cog):
                     return
             except Exception:
                 pass
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(3.0)
 
     @commands.Cog.listener()
     async def on_invite_create(self, invite):

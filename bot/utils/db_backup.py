@@ -276,6 +276,10 @@ async def backup_now(reason: str = "periodic", force: bool = False) -> Dict[str,
                         "files": file_count,
                         "hash": zip_hash[:16],
                     }
+                elif resp.status == 429:
+                    _warn("Webhook rate limited (429) — skipping backup upload this cycle")
+                    _state["last_backup_status"] = "rate_limited"
+                    return {"success": False, "reason": "rate limited (429)"}
                 else:
                     text = await resp.text()
                     _err(f"Webhook upload failed (HTTP {resp.status}): {text[:200]}")
