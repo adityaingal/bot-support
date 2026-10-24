@@ -225,7 +225,7 @@ from utils.http import http_client, describe_http_failure, log_discord_once
 from utils import cloudbreaker
 from utils.cloudbreaker import CloudflareBanError
 
-cloudbreaker.install()
+# cloudbreaker.install()  # Disabled - direct Discord API access
 
 # Reuse a small set of persistent aiosqlite connections instead of spawning a
 # new worker thread + file open for every query. Each message used to open
