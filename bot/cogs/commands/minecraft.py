@@ -13,7 +13,6 @@
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands, ui, File
-from mcstatus import JavaServer, BedrockServer
 import aiosqlite
 import os
 import re
@@ -112,6 +111,9 @@ class Minecraft(commands.Cog):
         return re.sub(r'§.', '', motd).strip()
 
     async def auto_detect_server(self, ip: str, port: int = None):
+        # Deferred: mcstatus pulls dnspython and costs ~290ms of startup, but
+        # only this command needs it.
+        from mcstatus import JavaServer, BedrockServer
         try:
             java_port = port or 25565
             server = JavaServer(ip, java_port)

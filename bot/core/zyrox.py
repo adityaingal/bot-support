@@ -17,7 +17,6 @@ from discord.ext import commands, tasks
 import discord
 import aiohttp
 import json
-import jishaku
 import asyncio
 import typing
 from typing import List
@@ -84,6 +83,7 @@ class zyrox(commands.AutoShardedBot):
         self.status_index = 0
         self.status_list = []
         self._cogs_loaded = False
+        self._jishaku_task: typing.Optional[asyncio.Task] = None
         # Bot-wide access gate: privileged server commands run only for the
         # bot developer, the server owner, or an Administrator.
         self.add_check(self._access_control)
@@ -106,8 +106,25 @@ class zyrox(commands.AutoShardedBot):
             print("INFO  - Loading cogs...", flush=True)
             await self.load_extensions()
             self._cogs_loaded = True
+            # jishaku is an owner/debug cog that only registers prefix commands.
+            # Its import pulls tabulate plus sqlite/asyncpg/aiomysql drivers
+            # (~440ms on top of the boot import), so loading it as a task lets
+            # that work overlap gateway connect() instead of delaying
+            # login -> connect. It registers no app commands, so doing this
+            # after tree.sync() is safe too.
+            self._jishaku_task = asyncio.create_task(
+                self._load_jishaku(), name="support:jishaku"
+            )
         if not self.status_task.is_running():
             self.status_task.start()
+
+    async def _load_jishaku(self) -> None:
+        try:
+            await self.load_extension("jishaku")
+            print(Fore.GREEN + Style.BRIGHT + "Loaded extension: jishaku", flush=True)
+        except Exception as e:
+            print(f"{Fore.YELLOW}jishaku load failed (continuing without it): {e!r}",
+                  flush=True)
 
     async def load_extensions(self):
         for extension in extensions:
@@ -125,6 +142,11 @@ class zyrox(commands.AutoShardedBot):
         try:
             if self.status_task.is_running():
                 self.status_task.cancel()
+        except Exception:
+            pass
+        try:
+            if self._jishaku_task is not None and not self._jishaku_task.done():
+                self._jishaku_task.cancel()
         except Exception:
             pass
         # Close the shared aiohttp session created by the Badges/owner cog.

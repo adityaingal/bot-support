@@ -14,7 +14,6 @@ import discord
 import asyncio
 import aiohttp
 from discord.ext import commands
-from deep_translator import GoogleTranslator
 from discord.ui import LayoutView, TextDisplay, Separator, Container
 from utils.cv2 import CV2, build_container
 
@@ -51,6 +50,9 @@ class TranslateCog(commands.Cog):
     async def translate_text(self, text: str) -> str:
         # deep-translator is blocking (and capped at ~5 req/s) — run it in a
         # worker thread and back off before retrying when Google throttles.
+        # Imported here: deep_translator drags in bs4/soupsieve (~230ms) that
+        # boot would otherwise pay for every restart.
+        from deep_translator import GoogleTranslator
         last_error = None
         for delay in (0.0, 2.0, 4.0):
             if delay:

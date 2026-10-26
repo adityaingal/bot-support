@@ -17,7 +17,6 @@ import asyncio
 
 import discord
 from discord.ext import commands
-import chess
 from utils.emoji import SUCCESS
 
 from .utils import DiscordColor, DEFAULT_COLOR
@@ -27,6 +26,11 @@ class Chess:
     BASE_URL: ClassVar[str] = "http://www.fen-to-image.com/image/64/double/coords/"
 
     def __init__(self, *, white: discord.User, black: discord.User) -> None:
+        # Deferred: python-chess costs ~230ms of startup for a game almost
+        # nobody plays, so it only loads when a chess match is created.
+        # (The `chess.Board` annotations here are not evaluated at runtime.)
+        import chess
+
         self.white = white
         self.black = black
         self.turn = self.white

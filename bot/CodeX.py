@@ -238,10 +238,12 @@ from utils.dbpool import install as _install_dbpool
 
 _install_dbpool(aiosqlite)
 
-import jishaku
 import cogs
 
 
+# jishaku is no longer imported here: it is loaded from setup_hook (see
+# core.zyrox) as a background task so its ~440ms import overlaps the gateway
+# connect instead of delaying it.
 os.environ["JISHAKU_NO_DM_TRACEBACK"] = "False"
 os.environ["JISHAKU_HIDE"] = "True"
 os.environ["JISHAKU_NO_UNDERSCORE"] = "True"
@@ -250,6 +252,14 @@ os.environ["JISHAKU_FORCE_PAGINATOR"] = "True"
 # Always prefer the value handed out by the process environment (Render) and
 # never allow a committed file to silently provide a token.
 TOKEN = (os.getenv("TOKEN") or "").strip()
+
+# Optional exit IP for all Discord traffic (REST login, gateway, CDN) — read by
+# core.zyrox too. Render's shared PDX IPs are frequently Cloudflare-blocked, so
+# a proxy is the only way to get a *different* exit IP and skip a multi-hour
+# Retry-After wait. Also gates the IPv6 escape hatch below: swapping address
+# family keeps the same exit IP (so it cannot lift a block) and would only make
+# the proxy connection itself fail.
+DISCORD_PROXY = (os.getenv("DISCORD_PROXY") or "").strip() or None
 
 log_info("Loading configuration... done")
 
@@ -317,6 +327,9 @@ async def _discord_blocked_over(family: int) -> bool:
 
     Escape hatch for edge blocks: if the default (IPv4) route is blocked but
     IPv6 still answers normally, login can be forced over IPv6.
+
+    When DISCORD_PROXY is set the probe goes through it too, so the verdict
+    describes the IP Discord actually sees instead of Render's blocked one.
     """
     label = "IPv6" if family == socket.AF_INET6 else "IPv4"
     try:
@@ -326,6 +339,7 @@ async def _discord_blocked_over(family: int) -> bool:
             async with probe.get(
                 "https://discord.com/api/v10/users/@me",
                 headers={"User-Agent": "DiscordBot (https://discord.com, 2.0) Python/3.11 aiohttp/3.9"},
+                proxy=DISCORD_PROXY,
             ) as resp:
                 text = await resp.text()
                 blocked = resp.status == 429 or "<html" in text.lower()
@@ -346,6 +360,7 @@ tree = client.tree
 _ready_done = False
 _stats_task = None
 _sync_task = None
+_emoji_task = None
 
 # --- Background Task for Stats ---
 async def update_stats():
@@ -409,7 +424,7 @@ async def on_error(event_method, *args, **kwargs):
 
 @client.event
 async def on_ready():
-    global _ready_done, _stats_task, _sync_task
+    global _ready_done, _stats_task, _sync_task, _emoji_task
 
     if _ready_done:
         # Reconnect: the gateway is back, nothing to restart.
@@ -435,13 +450,18 @@ async def on_ready():
     log_info(f"Connected to {len(client.users)} users")
     _set_startup(phase="ready", last_error=None, next_retry_in=None, attempt=0)
 
-    # Sync application emojis on startup (never let this kill on_ready)
-    try:
-        await run_sync(TOKEN)
-    except Exception as e:
-        log_warning(f"Emoji sync skipped/failed: {e!r}")
-
     # Started exactly once per process — on_ready can fire again on reconnect.
+    #
+    # Emoji sync runs as its own task: it makes several Discord API round
+    # trips (and sleeps 0.5s between writes), so awaiting it here delayed
+    # slash-command sync, stats and the DB backup task by that whole window.
+    async def _emoji_sync_worker():
+        try:
+            await run_sync(TOKEN)
+        except Exception as e:
+            log_warning(f"Emoji sync skipped/failed: {e!r}")
+
+    _emoji_task = asyncio.create_task(_emoji_sync_worker(), name="support:emoji_sync")
     _sync_task = asyncio.create_task(sync_commands(), name="support:sync_commands")
     _stats_task = asyncio.create_task(update_stats(), name="support:update_stats")
     try:
@@ -729,7 +749,7 @@ async def shutdown(reason: str) -> None:
     _shutdown_started = True
     log_info(f"Shutting down: {reason}")
 
-    for task in (_stats_task, _sync_task):
+    for task in (_stats_task, _sync_task, _emoji_task):
         if task is not None and not task.done():
             task.cancel()
 
@@ -851,11 +871,6 @@ async def main():
 
     async with client:
         try:
-            try:
-                await client.load_extension("jishaku")
-            except Exception as e:
-                log_warning(f"jishaku load failed (continuing without it): {e!r}")
-
             log_info("Connecting to Discord...")
 
             attempt = 0
@@ -978,7 +993,14 @@ async def main():
                     # IPv6 escape hatch: a 429 means THIS route is edge-blocked.
                     # Probe IPv6 once; when it answers cleanly, force the next
                     # attempt (REST login + gateway) over it.
-                    if not using_ipv6:
+                    #
+                    # Skipped entirely when a proxy is configured: swapping the
+                    # local address family does not change the exit IP Discord
+                    # sees (so it cannot lift the block), and forcing AF_INET6
+                    # would make the connection to the proxy itself fail.
+                    if DISCORD_PROXY:
+                        pass
+                    elif not using_ipv6:
                         try:
                             if not await _discord_blocked_over(socket.AF_INET6):
                                 client.http.connector = aiohttp.TCPConnector(
