@@ -276,6 +276,10 @@ MAX_START_ATTEMPTS = 7
 MAX_RATE_LIMIT_WAITS = 30
 RATE_LIMIT_BASE_WAIT = 120.0
 RATE_LIMIT_MAX_WAIT = 1800.0
+# Ceiling for honouring a 429's Retry-After. Must exceed any real Discord/CF
+# block (they routinely run 4h+); waking early renews the block, so a cap
+# below Retry-After turns a 4h outage into an endless one.
+RATE_LIMIT_RETRY_AFTER_CAP = 21600.0
 SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
 
 # Live startup state, published on /api/status (one HTTP GET beats digging
@@ -1012,7 +1016,7 @@ async def main():
                         # Exiting would let Render restart the process and reset
                         # the ladder to 120s - that is exactly what kept renewing
                         # the block. Stay alive on the longest cooldown instead.
-                        wait_time = max(RATE_LIMIT_MAX_WAIT, min(retry_after, 7200.0), ban_left)
+                        wait_time = max(RATE_LIMIT_MAX_WAIT, min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP), ban_left)
                         next_phase = "blocked"
                         log_error(f"Login still rate-limited after {MAX_RATE_LIMIT_WAITS} "
                                   f"cooldowns - process stays up; next attempt in "
@@ -1024,7 +1028,7 @@ async def main():
                         )
                         # Never wake up before Retry-After / an active
                         # cloudbreaker ban says the edge will answer again.
-                        wait_time = max(wait_time, min(retry_after, 7200.0), ban_left)
+                        wait_time = max(wait_time, min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP), ban_left)
                         log_discord_once(
                             f"startup-rate-limit-{rate_limit_waits}",
                             f"{describe_http_failure(failure)} during login - "
