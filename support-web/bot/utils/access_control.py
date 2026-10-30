@@ -63,6 +63,28 @@ def is_bot_dev(user) -> bool:
     return getattr(user, "id", None) in OWNER_IDS
 
 
+# Per-(channel, user, command) throttle for the deny embed. Without it a user
+# spamming a gated command gets one Access Denied reply per message and floods
+# the channel; repeated denials inside the window are silently dropped (the
+# command still never runs).
+_DENY_COOLDOWN = 10.0
+_last_denied: dict = {}
+_MAX_DENIED_KEYS = 5000
+
+
+def _deny_throttled(channel_id, user_id, command_name: str) -> bool:
+    import time
+    key = (channel_id, user_id, command_name)
+    now = time.monotonic()
+    if len(_last_denied) > _MAX_DENIED_KEYS:
+        _last_denied.clear()
+    last = _last_denied.get(key)
+    if last is not None and now - last < _DENY_COOLDOWN:
+        return True
+    _last_denied[key] = now
+    return False
+
+
 def _permission_requirements(cmd) -> dict | None:
     """Return the has_permissions(...) dict captured by a command's checks."""
     for check in getattr(cmd, "checks", ()):  # empty for groups without checks
@@ -118,7 +140,8 @@ async def check_command_access(ctx: commands.Context) -> bool:
         return True
 
     if ctx.guild is None:
-        await _deny(ctx, "**This is a server command** — it can only be used inside a server.")
+        if not _deny_throttled(None, ctx.author.id, cmd.qualified_name):
+            await _deny(ctx, "**This is a server command** — it can only be used inside a server.")
         return False
 
     author = ctx.author
@@ -129,9 +152,10 @@ async def check_command_access(ctx: commands.Context) -> bool:
     if guild_permissions is not None and getattr(guild_permissions, "administrator", False):
         return True
 
-    await _deny(
-        ctx,
-        f"{author.mention} **Administrator or the server owner** is required "
-        f"to use `{ctx.command.qualified_name}`.",
-    )
+    if not _deny_throttled(ctx.channel.id, author.id, cmd.qualified_name):
+        await _deny(
+            ctx,
+            f"{author.mention} **Administrator or the server owner** is required "
+            f"to use `{ctx.command.qualified_name}`.",
+        )
     return False
