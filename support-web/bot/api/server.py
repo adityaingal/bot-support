@@ -211,7 +211,8 @@ def create_app() -> FastAPI:
         startup = getattr(app.state, "startup", None)
         if isinstance(startup, dict) and startup.get("phase") not in (None, "init"):
             payload["discord"]["phase"] = startup.get("phase")
-            for key in ("attempt", "last_error", "next_retry_in"):
+            for key in ("attempt", "last_error", "next_retry_in",
+                        "synced_commands", "sync_attempts", "sync_error"):
                 if startup.get(key) is not None:
                     payload["discord"][key if key != "next_retry_in" else "next_retry_in_s"] = startup[key]
             if startup.get("updated"):
