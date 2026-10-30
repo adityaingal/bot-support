@@ -1,0 +1,107 @@
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                                                                  ║
+# ║   ░█▀▀░█▀█░█▀▄░█▀▀░█░█   ░█▀▄░█▀▀░█░█░█▀▀                     ║
+# ║   ░█░░░█░█░█░█░█▀▀░▄▀▄   ░█░█░█▀▀░▀▄▀░▀▀█                     ║
+# ║   ░▀▀▀░▀▀▀░▀▀░░▀▀▀░▀░▀   ░▀▀░░▀▀▀░░▀░░▀▀▀                     ║
+# ║                                                                  ║
+# ║            © 2026 OGADI — All Rights Reserved                    ║
+# ║                                                                  ║
+# ║   discord  ──  https://discord.gg/UVRWygSpJq                    ║
+# ║                                                                  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+import os
+import discord
+from utils.emoji import ARROWRED
+from discord.ui import LayoutView, TextDisplay, Separator, Container
+from discord.ext import commands
+import aiosqlite
+from datetime import datetime
+from utils.config import *
+
+MESSAGES_DB = "db/messages.db"
+_CREATE_TABLE = """
+    CREATE TABLE IF NOT EXISTS messages (
+        guild_id INTEGER,
+        user_id INTEGER,
+        date TEXT,
+        count INTEGER
+    )
+"""
+
+
+class MessagesView(LayoutView):
+    def __init__(self, member, total, today_count, daily_average, author):
+        super().__init__(timeout=None)
+
+        self.add_item(
+            Container(
+                TextDisplay(f"**Messages Stats for {member.display_name}**"),
+                Separator(visible=True),
+                TextDisplay(
+                    f"**User**: {member.mention}\n\n"
+                    f"**Daily Messages**: {daily_average}\n"
+                    f"**Today Messages**: {today_count}\n"
+                    f"**Total Messages**: {total}\n\n"
+                    f"**{ARROWRED}Upgrade Your Experience With [{BRAND_NAME} Noprefix](https://discord.gg/UVRWygSpJq)**"
+                ),
+            )
+        )
+
+
+class Messages(commands.Cog):
+    def __init__(self, client):
+        self.client = client
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot or not message.guild:
+            return
+
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        async with aiosqlite.connect(MESSAGES_DB) as db:
+            async with db.execute(
+                "SELECT count FROM messages WHERE guild_id = ? AND user_id = ? AND date = ?",
+                (message.guild.id, message.author.id, today),
+            ) as cursor:
+                result = await cursor.fetchone()
+
+            if result:
+                await db.execute(
+                    "UPDATE messages SET count = count + 1 WHERE guild_id = ? AND user_id = ? AND date = ?",
+                    (message.guild.id, message.author.id, today),
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO messages (guild_id, user_id, date, count) VALUES (?, ?, ?, 1)",
+                    (message.guild.id, message.author.id, today),
+                )
+            await db.commit()
+
+    @commands.command(name="messages", aliases=["msg"])
+    async def messages(self, ctx, member: discord.Member = None):
+        member = member or ctx.author
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+
+        async with aiosqlite.connect(MESSAGES_DB) as db:
+            async with db.execute(
+                "SELECT date, count FROM messages WHERE guild_id = ? AND user_id = ?",
+                (ctx.guild.id, member.id),
+            ) as cursor:
+                data = await cursor.fetchall()
+
+        total = sum(row[1] for row in data)
+        today_count = sum(row[1] for row in data if row[0] == today)
+        unique_days = set(row[0] for row in data)
+        daily_average = round(total / len(unique_days), 2) if unique_days else 0
+
+        view = MessagesView(member, total, today_count, daily_average, ctx.author)
+        await ctx.send(view=view)
+
+
+async def setup(client):
+    os.makedirs("db", exist_ok=True)
+    async with aiosqlite.connect(MESSAGES_DB) as db:
+        await db.execute(_CREATE_TABLE)
+        await db.commit()
+    await client.add_cog(Messages(client))
