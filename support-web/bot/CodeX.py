@@ -287,9 +287,10 @@ MAX_RATE_LIMIT_WAITS = 30
 RATE_LIMIT_BASE_WAIT = 120.0
 RATE_LIMIT_MAX_WAIT = 1800.0
 # Ceiling for honouring a 429's Retry-After. Must exceed any real Discord/CF
-# block (they routinely run 4h+); waking early renews the block, so a cap
-# below Retry-After turns a 4h outage into an endless one.
-RATE_LIMIT_RETRY_AFTER_CAP = 21600.0
+# block (they routinely run 4h+ and have hit 26021s / ~7.2h on this bot);
+# waking early renews the block, so a cap below Retry-After turns a 7h outage
+# into an endless one (21600s cap vs a 26021s block renewed it every cycle).
+RATE_LIMIT_RETRY_AFTER_CAP = 43200.0
 SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
 
 # Live startup state, published on /api/status (one HTTP GET beats digging
