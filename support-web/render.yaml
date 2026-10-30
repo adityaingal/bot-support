@@ -1,0 +1,90 @@
+# Render Blueprint — bot only (Discord bot + FastAPI backend in one process)
+# Docs: https://render.com/docs/blueprint-spec
+
+services:
+  # ---------------------------------------------------------------------------
+  # API + Bot Service (Python Web Service)
+  # Hosts the Discord gateway connection and the FastAPI backend (/health,
+  # /api/v1). The Next.js dashboard is NOT deployed here.
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: support-web-api
+    runtime: python
+    plan: free
+    rootDir: bot
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python CodeX.py
+    healthCheckPath: /health
+    envVars:
+      # MUST be fully qualified (e.g. 3.11.9) — bare "3.11" is ignored by Render
+      # and falls back to 3.14.x which breaks discord.py login.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: API_ENABLED
+        value: "true"
+      - key: brand_name
+        value: Support
+      - key: CREATOR_NAME
+        value: OGADI
+      - key: CREATOR_ID
+        sync: false
+      - key: SUPPORT_SERVER_URL
+        value: https://discord.gg/UVRWygSpJq
+      - key: DISCORD_STATUS
+        value: online
+      - key: BOT_ACTIVITY
+        value: Support | >help
+      - key: TUNNEL_ENABLED
+        value: "false"
+
+      # --- Required Secrets (fill in when creating Blueprint) ---
+      - key: TOKEN
+        sync: false
+      - key: DASHBOARD_API_KEY
+        sync: false
+      - key: OWNER_IDS
+        sync: false
+
+      # --- Music / Lavalink (optional) ---
+      - key: LAVALINK_HOST
+        sync: false
+      - key: LAVALINK_PASSWORD
+        sync: false
+      - key: LAVALINK_SECURE
+        value: "false"
+      - key: LAVALINK_PORT
+        sync: false
+
+      # --- CORS (no dashboard deployed; add origins here if you add one later) ---
+      - key: CORS_ORIGINS
+        value: ""
+
+      # --- Keepalive (Free Tier Sleep Prevention) ---
+      # Left unset/empty: resolves RENDER_EXTERNAL_URL automatically -> /health
+      - key: KEEPALIVE_ENABLED
+        value: "true"
+      - key: KEEPALIVE_INTERVAL
+        value: "600"
+      - key: KEEPALIVE_URL
+        value: ""
+
+      # --- Persistent Storage (Optional on Paid Plans) ---
+      # If using a paid plan with a Render Disk, mount at /var/data and set RENDER_DISK_PATH to /var/data
+      - key: RENDER_DISK_PATH
+        sync: false
+
+      # --- Database Discord Webhook Persistence (Free Tier) ---
+      # Set this to a Discord webhook URL in your private staff/backup channel
+      # to automatically persist & recover all SQLite databases without a paid disk.
+      - key: DB_BACKUP_WEBHOOK_URL
+        sync: false
+      - key: DB_BACKUP_INTERVAL
+        value: "1800"
+      - key: DB_BACKUP_AUTO_RESTORE
+        value: "true"
+
+    # Uncomment this block if using a paid plan with persistent disk storage for SQLite:
+    # disk:
+    #   name: support-data
+    #   mountPath: /var/data
+    #   sizeGB: 1

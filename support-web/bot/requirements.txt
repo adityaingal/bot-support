@@ -1,0 +1,33 @@
+# Core Discord & Bot Framework
+discord.py>=2.3.2
+jishaku
+discord-ext-menus
+
+# Async HTTP & Networking
+aiohttp>=3.9.0
+requests>=2.31.0
+pycloudflared
+
+# FastAPI Web API for Dashboard
+fastapi>=0.110.0
+uvicorn>=0.30.0
+slowapi
+
+# Database & Async Filesystem
+aiosqlite>=0.19.0
+aiofiles>=23.2.0
+
+# Images, Games, Audio & Utilities
+Pillow>=10.0.0
+numpy
+colorama
+psutil
+python-dotenv
+PyYAML
+pytz
+chess
+mcstatus
+wavelink>=2.0.0
+
+# Language Tools
+deep-translator==1.11.4
