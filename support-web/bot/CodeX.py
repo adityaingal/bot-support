@@ -294,7 +294,8 @@ SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
 
 # Live startup state, published on /api/status (one HTTP GET beats digging
 # through Render logs while the bot is not yet online).
-startup_state = {"phase": "init", "attempt": 0, "last_error": None, "next_retry_in": None}
+startup_state = {"phase": "init", "attempt": 0, "last_error": None, "next_retry_in": None,
+                 "synced_commands": None, "sync_attempts": 0, "sync_error": None}
 
 
 def _set_startup(**kwargs) -> None:
@@ -387,13 +388,35 @@ async def update_stats():
 
 
 async def sync_commands():
-    """Sync the application command tree (once per process)."""
-    try:
-        synced = await client.tree.sync()
-        all_commands = list(client.commands)
-        log_info(f"Synced {len(all_commands)} prefix commands and {len(synced)} slash commands")
-    except Exception as e:
-        log_warning(f"Command tree sync failed: {e!r}")
+    """Sync the application command tree, retrying until Discord accepts it.
+
+    A single attempt (the old behaviour) meant a Cloudflare-blocked IP made
+    the sync fail silently at on_ready and slash commands stayed missing for
+    hours — until something restarted the process. Retry with an escalating
+    cooldown instead, and publish progress on /api/status so the state is
+    visible without digging through logs.
+    """
+    attempt = 0
+    delay = 15.0
+    while True:
+        attempt += 1
+        try:
+            synced = await client.tree.sync()
+            all_commands = list(client.commands)
+            log_info(f"Synced {len(all_commands)} prefix commands and "
+                     f"{len(synced)} slash commands (attempt {attempt})")
+            _set_startup(synced_commands=len(synced), sync_attempts=attempt,
+                         sync_error=None)
+            return
+        except Exception as e:
+            err = describe_http_failure(e)
+            _set_startup(synced_commands=None, sync_attempts=attempt,
+                         sync_error=err)
+            log_warning(f"Command tree sync failed (attempt {attempt}): {err}")
+            if cloudbreaker.is_banned() and cloudbreaker.seconds_left() > delay:
+                delay = min(cloudbreaker.seconds_left() + 5.0, RATE_LIMIT_MAX_WAIT)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, RATE_LIMIT_MAX_WAIT)
 
 
 # --- Event Handlers ---

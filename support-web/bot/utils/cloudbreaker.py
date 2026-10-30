@@ -11,9 +11,9 @@ import time
 
 _banned_until = 0.0
 _last_log = 0.0
-_LOG_GAP = 300
+_LOG_GAP = 100
 
-BAN_COOLDOWN = 300.0
+BAN_COOLDOWN = 100.0
 
 
 class CloudflareBanError(RuntimeError):
