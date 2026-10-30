@@ -561,6 +561,13 @@ class Music(commands.Cog):
                         f"failed ({uri}): {type(e).__name__}: {e}",
                         flush=True,
                     )
+                    # asyncio.wait_for cancels Pool.connect but leaves the
+                    # node's internal websocket retry loop running — a dead
+                    # candidate then spams 403/timeout forever in the logs.
+                    try:
+                        await node.close(eject=True)
+                    except Exception:
+                        pass
                     continue
 
                 if node.identifier in wavelink.Pool.nodes:
