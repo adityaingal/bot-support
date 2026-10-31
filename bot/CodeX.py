@@ -273,23 +273,24 @@ LOG_CHANNEL_ID = 1396794297386532978 # Replace with the channel ID for join/leav
 # limit). Fatal errors (bad token, missing intents, failed cog load) exit
 # immediately so the problem stays visible instead of being retried forever.
 MAX_START_ATTEMPTS = 7
-# A 429/Cloudflare block during login lasts far longer than a normal connect
-# failure, and every process restart renews it. For rate limits we do NOT use
-# MAX_START_ATTEMPTS: we stay in this process and escalate the cooldown
-# (120s -> 1800s, up to MAX_RATE_LIMIT_WAITS waits ~= 13 hours) so Render
-# never restarts the service and the block has time to expire. Cloudflare IP
-# blocks from repeated logins routinely last many hours — retrying faster (or
-# exiting and letting Render restart us) only renews them. Beyond the last
-# wait the process does NOT exit: it keeps retrying every RATE_LIMIT_MAX_WAIT
-# forever (phase "blocked") because a Render restart would reset the ladder
-# back to 120s and renew the block.
+# A 429/Cloudflare block during login is handled with in-process POLLING
+# instead of one long sleep: wake at most every RATE_LIMIT_POLL_MAX seconds
+# and retry, so we connect the moment the edge answers again — Retry-After
+# has been observed to overstate the real block, and in-process retries do
+# NOT extend it (three boots at 10:04/10:10/10:14 UTC all reported the same
+# absolute expiry of 01:26 UTC). We never exit the process: a Render restart
+# resets the ladder back to 120s, and exits/restart loops are what historically
+# kept renewing blocks. Beyond the last wait the process stays up in phase
+# "blocked" and keeps polling at the same interval forever.
 MAX_RATE_LIMIT_WAITS = 30
 RATE_LIMIT_BASE_WAIT = 120.0
 RATE_LIMIT_MAX_WAIT = 1800.0
-# Ceiling for honouring a 429's Retry-After. Must exceed any real Discord/CF
-# block (they routinely run 4h+); waking early renews the block, so a cap
-# below Retry-After turns a short outage into an endless one. Observed blocks
-# on Render's shared egress IPs: 7.2h, 15.4h (Retry-After=55333) and ~23h
+# Hard ceiling on any rate-limit sleep: while blocked we poll at this
+# interval (600s = ~86 probes over a 14h block — far below Discord's
+# invalid-request limits) instead of trusting Retry-After blindly.
+RATE_LIMIT_POLL_MAX = 600.0
+# Ceiling for honouring a 429's Retry-After. Observed blocks on Render's
+# shared egress IPs: 7.2h, 15.4h (Retry-After=55333) and ~23h
 # (discord-api-docs issue #8570 - same Render 429-after-idle pattern).
 RATE_LIMIT_RETRY_AFTER_CAP = 172800.0
 SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
@@ -1019,9 +1020,10 @@ async def main():
                         # blocked: fall back to the default family next round.
                         using_ipv6 = False
 
-                    # Retry faster only renews the block: escalate the cooldown,
-                    # keep the process alive (/health stays 200 so Render does
-                    # not restart us) and let the block expire by itself.
+                    # Keep the process alive (/health stays 200 so Render does
+                    # not restart us) and poll: probe the edge again after a
+                    # short, bounded interval instead of sleeping out the whole
+                    # block — the moment it answers, we are live.
                     rate_limit_waits += 1
                     headers_hint = _rate_limit_headers(failure)
                     if headers_hint:
@@ -1040,9 +1042,11 @@ async def main():
 
                     if rate_limit_waits > MAX_RATE_LIMIT_WAITS:
                         # Exiting would let Render restart the process and reset
-                        # the ladder to 120s - that is exactly what kept renewing
-                        # the block. Stay alive on the longest cooldown instead.
+                        # the ladder to 120s. Stay alive and keep polling.
                         wait_time = max(RATE_LIMIT_MAX_WAIT, min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP), ban_left)
+                        wait_time = min(wait_time, RATE_LIMIT_POLL_MAX)
+                        if retry_after > 0:
+                            wait_time = min(wait_time, max(retry_after, 10.0))
                         next_phase = "blocked"
                         log_error(f"Login still rate-limited after {MAX_RATE_LIMIT_WAITS} "
                                   f"cooldowns - process stays up; next attempt in "
@@ -1052,9 +1056,14 @@ async def main():
                             RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_waits - 1)),
                             RATE_LIMIT_MAX_WAIT,
                         )
-                        # Never wake up before Retry-After / an active
-                        # cloudbreaker ban says the edge will answer again.
                         wait_time = max(wait_time, min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP), ban_left)
+                        # Poll instead of trusting Retry-After blindly: clamp
+                        # every sleep so we re-probe the edge at the interval.
+                        # When Retry-After shrinks near the block's end, honour
+                        # it exactly so the final wake-up lands on expiry.
+                        wait_time = min(wait_time, RATE_LIMIT_POLL_MAX)
+                        if retry_after > 0:
+                            wait_time = min(wait_time, max(retry_after, 10.0))
                         log_discord_once(
                             f"startup-rate-limit-{rate_limit_waits}",
                             f"{describe_http_failure(failure)} during login - "
