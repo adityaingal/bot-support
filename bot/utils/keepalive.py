@@ -24,9 +24,18 @@ from utils.http import http_client
 def _resolve_keepalive_url() -> str:
     render_url = (os.getenv("RENDER_EXTERNAL_URL") or "").strip()
     url = (os.getenv("KEEPALIVE_URL") or "").strip()
-    # If on Render, automatically use the actual active external URL if KEEPALIVE_URL is empty or pointing to an obsolete service
-    if render_url and (not url or "bot-support-aauu" in url or "yourdomain" in url):
-        return f"{render_url.rstrip('/')}/health"
+    # If on Render, automatically use the actual active external URL when
+    # KEEPALIVE_URL is empty, placeholder, or belongs to a DIFFERENT service
+    # (e.g. after migrating to a new service/region the old env value would
+    # keep pinging a dead or foreign URL forever).
+    if render_url:
+        def _host(u: str) -> str:
+            return u.split("/", 3)[2].lower() if "://" in u and u.count("/") >= 2 else ""
+        render_host = _host(render_url)
+        url_host = _host(url)
+        if not url or "yourdomain" in url or "bot-support-aauu" in url \
+                or (render_host and url_host and url_host != render_host):
+            return f"{render_url.rstrip('/')}/health"
     if url:
         return url
     if render_url:
