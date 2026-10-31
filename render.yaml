@@ -11,6 +11,10 @@ services:
     name: support-web-api
     runtime: python
     plan: free
+    # Oregon's shared egress pool is Cloudflare-blocked for Discord login
+    # (15h+ Retry-After). Region is immutable per service, so a fresh
+    # service in another region gets a different egress IP pool.
+    region: singapore
     rootDir: bot
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: python CodeX.py
