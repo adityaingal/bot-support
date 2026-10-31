@@ -288,8 +288,10 @@ RATE_LIMIT_BASE_WAIT = 120.0
 RATE_LIMIT_MAX_WAIT = 1800.0
 # Ceiling for honouring a 429's Retry-After. Must exceed any real Discord/CF
 # block (they routinely run 4h+); waking early renews the block, so a cap
-# below Retry-After turns a 4h outage into an endless one.
-RATE_LIMIT_RETRY_AFTER_CAP = 21600.0
+# below Retry-After turns a short outage into an endless one. Observed blocks
+# on Render's shared egress IPs: 7.2h, 15.4h (Retry-After=55333) and ~23h
+# (discord-api-docs issue #8570 - same Render 429-after-idle pattern).
+RATE_LIMIT_RETRY_AFTER_CAP = 172800.0
 SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
 
 # Live startup state, published on /api/status (one HTTP GET beats digging
