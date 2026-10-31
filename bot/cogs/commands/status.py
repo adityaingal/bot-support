@@ -15,6 +15,7 @@ from utils.emoji import DND, ICON_BROWSER, IDLE, LOADING_ALT1, MOBILE, OFFLINE, 
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont
 import aiohttp
+import asyncio
 import os
 from utils.Tools import *
 
@@ -76,7 +77,9 @@ class Status(commands.Cog):
                                 with open(album_image_path, 'wb') as f:
                                     f.write(album_data)
 
-                    card_image_path = self.create_spotify_card(song_name, album_image_path)
+                    card_image_path = await asyncio.to_thread(
+                        self.create_spotify_card, song_name, album_image_path
+                    )
 
                     if os.path.exists(card_image_path):
                         file = discord.File(card_image_path, filename="spotify_card.png")

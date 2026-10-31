@@ -143,7 +143,7 @@ class Minecraft(commands.Cog):
             pass
         return None, {"online": False}, None
     
-    async def create_status_image(self, status_data, ip, port, server_type, server_icon_b64):
+    def create_status_image(self, status_data, ip, port, server_type, server_icon_b64):
         try:
             bg = Image.open(BACKGROUND_PATH).convert("RGBA")
             img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT))
@@ -177,7 +177,7 @@ class Minecraft(commands.Cog):
     async def generate_response(self, guild, server_type, ip, port, user_id):
         _, status, favicon = await self.auto_detect_server(ip, port)
         if not status: status = {'online': False}
-        file = await self.create_status_image(status, ip, port, server_type, favicon)
+        file = await asyncio.to_thread(self.create_status_image, status, ip, port, server_type, favicon)
         is_online = status.get("online", False)
         embed = discord.Embed(title=f"{EMOJI_STATUS_ONLINE if is_online else EMOJI_STATUS_OFFLINE} Minecraft Server Status", color=discord.Color.dark_green() if is_online else discord.Color.red())
         

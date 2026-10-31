@@ -12,6 +12,7 @@
 
 import discord
 from discord.ext import commands
+import asyncio
 import os
 import random
 from typing import List, Tuple, Union
@@ -145,7 +146,7 @@ class Blackjack(commands.Cog):
             dealer_score = self.calc_hand(dealer_hand)
 
             async def out_table(**kwargs) -> discord.Message:
-                self.output(ctx.author.id, dealer_hand, player_hand)
+                await asyncio.to_thread(self.output, ctx.author.id, dealer_hand, player_hand)
                 file = discord.File(f"data/{ctx.author.id}.png", filename=f"{ctx.author.id}.png")
                 view = CV2(kwargs.get('title', 'Blackjack'), kwargs.get('description', ''))
                 msg: discord.Message = await ctx.send(file=file, view=view)
