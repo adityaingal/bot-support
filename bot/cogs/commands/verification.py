@@ -24,6 +24,7 @@ import logging
 from datetime import datetime ,timezone ,timedelta 
 from typing import Optional 
 from utils .Tools import *
+from utils.cache import cached_or_fetch, invalidate
 
 
 logger =logging .getLogger ('discord')
@@ -871,6 +872,7 @@ class VerificationSetupView (discord .ui .View ):
                     )
                     )
                     await db .commit ()
+                    invalidate("verif_ch", interaction.guild.id)
 
 
             await self .send_verification_panel (verified_role )
@@ -1120,38 +1122,45 @@ class Verification (commands .Cog ):
         except Exception as e :
             logger .error (f"Error creating verification tables: {e}")
 
+    async def get_verification_channel(self, guild_id):
+        # Cached: this SELECT used to run on EVERY message in EVERY guild.
+        async def _fetch():
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                async with db.cursor() as cur:
+                    await cur.execute(
+                        "SELECT verification_channel_id FROM verification_config WHERE guild_id = ? AND enabled = 1",
+                        (guild_id,),
+                    )
+                    row = await cur.fetchone()
+                    return row[0] if row else None
+        return await cached_or_fetch("verif_ch", _fetch, guild_id, ttl=30.0)
+
     @commands .Cog .listener ()
     async def on_message (self ,message ):
         """Auto-delete messages in verification channel from non-bot users"""
-        if message .author .bot :
+        if message .author .bot or message .guild is None :
             return 
 
         try :
-            async with aiosqlite .connect (DATABASE_PATH )as db :
-                async with db .cursor ()as cur :
-                    await cur .execute (
-                    "SELECT verification_channel_id FROM verification_config WHERE guild_id = ? AND enabled = 1",
-                    (message .guild .id ,)
-                    )
-                    result =await cur .fetchone ()
+            configured_channel = await self.get_verification_channel(message.guild.id)
 
-                    if result and result [0 ]==message .channel .id :
+            if configured_channel == message .channel .id :
 
-                        if not message .author .guild_permissions .manage_messages :
-                            try :
-                                await message .delete ()
+                if not message .author .guild_permissions .manage_messages :
+                    try :
+                        await message .delete ()
 
-                                embed =discord .Embed (
-                                title ="Message Deleted",
-                                description ="This channel is for verification only. Please use the buttons above to verify.",
-                                color =DISCORD_COLORS ['warning']
-                                )
-                                try :
-                                    await message .author .send (embed =embed )
-                                except discord .Forbidden :
-                                    pass 
-                            except discord .Forbidden :
-                                pass 
+                        embed =discord .Embed (
+                        title ="Message Deleted",
+                        description ="This channel is for verification only. Please use the buttons above to verify.",
+                        color =DISCORD_COLORS ['warning']
+                        )
+                        try :
+                            await message .author .send (embed =embed )
+                        except discord .Forbidden :
+                            pass 
+                    except discord .Forbidden :
+                        pass 
         except Exception as e :
             logger .error (f"Error in verification message handler: {e}")
 
@@ -1420,6 +1429,7 @@ class Verification (commands .Cog ):
                     (ctx .guild .id ,)
                     )
                     await db .commit ()
+                    invalidate("verif_ch", ctx.guild.id)
 
 
             verification_channel =ctx .guild .get_channel (result [0 ])if result [0 ]else None 
@@ -1511,6 +1521,7 @@ class Verification (commands .Cog ):
                     (ctx .guild .id ,)
                     )
                     await db .commit ()
+                    invalidate("verif_ch", ctx.guild.id)
 
             current_time =utc_to_ist (discord .utils .utcnow ())
             embed =discord .Embed (

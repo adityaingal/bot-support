@@ -490,40 +490,42 @@ async def on_command_completion(context: commands.Context) -> None:
     # Skip when no real webhook is configured — a placeholder URL would raise on every command
     if not webhook_url or not webhook_url.rstrip("/").split("/")[-1].isdigit():
         return
-    async with aiohttp.ClientSession() as session:
-        webhook = discord.Webhook.from_url(webhook_url, session=session)
+    # Shared session (utils.http) — a fresh ClientSession per command was
+    # paying TLS/connector setup on every single command execution.
+    session = await http_client.start()
+    webhook = discord.Webhook.from_url(webhook_url, session=session)
 
-        embed_color = 0xFF0000
-        embed = discord.Embed(color=embed_color)
-        avatar_url = context.author.display_avatar.url
+    embed_color = 0xFF0000
+    embed = discord.Embed(color=embed_color)
+    avatar_url = context.author.display_avatar.url
 
-        embed.set_author(name=f"Cmd Executed: {executed_command}", icon_url=avatar_url)
-        embed.set_thumbnail(url=avatar_url)
+    embed.set_author(name=f"Cmd Executed: {executed_command}", icon_url=avatar_url)
+    embed.set_thumbnail(url=avatar_url)
 
-        if context.guild is not None:
-            embed.add_field(name="User", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
-            embed.add_field(name="Server", value=f"{context.guild.name} (`{context.guild.id}`)", inline=False)
-            embed.add_field(name="Channel", value=f"{context.channel.mention} (`{context.channel.id}`)", inline=False)
-        else:
-            embed.add_field(name="User (DM)", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
-        
-        embed.timestamp = discord.utils.utcnow()
-        embed.set_footer(text=f"{BRAND_NAME} Development™ ❤️", icon_url=client.user.display_avatar.url)
-        
-        try:
-            await webhook.send(embed=embed)
-        except discord.HTTPException as e:
-            # Never dump the body (429s here can be a Cloudflare HTML page)
-            # and never retry - the command already succeeded.
-            log_discord_once(
-                f"cmd-webhook-{getattr(e, 'status', 0)}",
-                f"command-log webhook: {describe_http_failure(e)} - not retrying",
-            )
-        except Exception as e:
-            log_discord_once(
-                f"cmd-webhook-{type(e).__name__}",
-                f"command-log webhook failed: {type(e).__name__}",
-            )
+    if context.guild is not None:
+        embed.add_field(name="User", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
+        embed.add_field(name="Server", value=f"{context.guild.name} (`{context.guild.id}`)", inline=False)
+        embed.add_field(name="Channel", value=f"{context.channel.mention} (`{context.channel.id}`)", inline=False)
+    else:
+        embed.add_field(name="User (DM)", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
+
+    embed.timestamp = discord.utils.utcnow()
+    embed.set_footer(text=f"{BRAND_NAME} Development™ ❤️", icon_url=client.user.display_avatar.url)
+
+    try:
+        await webhook.send(embed=embed)
+    except discord.HTTPException as e:
+        # Never dump the body (429s here can be a Cloudflare HTML page)
+        # and never retry - the command already succeeded.
+        log_discord_once(
+            f"cmd-webhook-{getattr(e, 'status', 0)}",
+            f"command-log webhook: {describe_http_failure(e)} - not retrying",
+        )
+    except Exception as e:
+        log_discord_once(
+            f"cmd-webhook-{type(e).__name__}",
+            f"command-log webhook failed: {type(e).__name__}",
+        )
 
 
 # --- Utility Commands ---

@@ -16,12 +16,26 @@ import json
 import asyncio
 from discord.ext import commands
 from utils.config import *
+from utils.cache import cached_or_fetch, invalidate
+from utils.Tools import getConfig
 
 class StickyMessageListener(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.processing_channels = set()
         self.last_processed = {}
+
+    async def _has_sticky(self, channel_id):
+        # Fast gate: channels without a sticky (almost all of them) must not
+        # pay a DB query on every single message.
+        async def _fetch():
+            async with aiosqlite.connect("db/stickymessages.db") as db:
+                cursor = await db.execute(
+                    "SELECT 1 FROM sticky_messages WHERE channel_id = ? AND enabled = 1 LIMIT 1",
+                    (channel_id,),
+                )
+                return await cursor.fetchone() is not None
+        return await cached_or_fetch("sticky_ex", _fetch, channel_id, ttl=5.0)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -33,6 +47,9 @@ class StickyMessageListener(commands.Cog):
             return
 
         if message.channel.id in self.processing_channels:
+            return
+
+        if not await self._has_sticky(message.channel.id):
             return
 
         async with aiosqlite.connect("db/stickymessages.db") as db:
@@ -103,16 +120,14 @@ class StickyMessageListener(commands.Cog):
             self.processing_channels.discard(message.channel.id)
 
     async def get_prefix(self, message):
+        # The old query targeted a table named `prefix` which does not exist
+        # (the real table is `prefixes`), so this threw an exception on every
+        # sticky-channel message and silently fell back to "!".
         try:
-            async with aiosqlite.connect("db/prefix.db") as db:
-                cursor = await db.execute(
-                    "SELECT prefix FROM prefix WHERE guild_id = ?",
-                    (message.guild.id,)
-                )
-                result = await cursor.fetchone()
-                return result[0] if result else "!"
-        except:
-            return "!"
+            data = await getConfig(message.guild.id)
+            return data.get("prefix", ">")
+        except Exception:
+            return ">"
 
     async def update_counter(self, guild_id, channel_id, new_count):
         async with aiosqlite.connect("db/stickymessages.db") as db:
@@ -176,6 +191,7 @@ class StickyMessageListener(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel):
+        invalidate("sticky_ex", channel.id)
         try:
             async with aiosqlite.connect("db/stickymessages.db") as db:
                 await db.execute(
@@ -188,6 +204,7 @@ class StickyMessageListener(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild):
+        invalidate("sticky_ex")
         try:
             async with aiosqlite.connect("db/stickymessages.db") as db:
                 await db.execute(

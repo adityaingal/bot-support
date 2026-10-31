@@ -17,6 +17,7 @@ from discord.ui import LayoutView, TextDisplay, Separator, Container
 import aiosqlite
 import re
 from utils.Tools import *
+from utils.cache import invalidate
 from utils.cv2 import CV2, build_container
 
 
@@ -93,6 +94,7 @@ class AutoReaction(commands.Cog):
             await db.execute("INSERT INTO autoreact (guild_id, trigger, emojis) VALUES (?, ?, ?)", 
                              (ctx.guild.id, trigger, " ".join(emoji_list)))
             await db.commit()
+        invalidate("autoreact", ctx.guild.id)
 
         view = CV2(f"{TICK} Trigger Added", f"Successfully added trigger '{trigger}' with emojis {', '.join(emoji_list)}.")
         await ctx.reply(view=view)
@@ -112,6 +114,7 @@ class AutoReaction(commands.Cog):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM autoreact WHERE guild_id = ? AND trigger = ?", (ctx.guild.id, trigger))
             await db.commit()
+        invalidate("autoreact", ctx.guild.id)
 
         view = CV2(f"{TICK} Trigger Removed", f"Successfully removed trigger '{trigger}'.")
         await ctx.reply(view=view)
@@ -149,6 +152,7 @@ class AutoReaction(commands.Cog):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM autoreact WHERE guild_id = ?", (ctx.guild.id,))
             await db.commit()
+        invalidate("autoreact", ctx.guild.id)
 
         view = CV2(f"{TICK} All Triggers Reset", "Successfully removed all auto-reaction triggers.")
         await ctx.reply(view=view)

@@ -128,6 +128,15 @@ class Mention(commands.Cog):
         if message.author.bot or not message.guild:
             return
 
+        # Fast path first: the blacklist/ignore queries below used to run on
+        # EVERY guild message, but they only matter when this listener would
+        # actually reply (bare bot mention).
+        if (
+            self.bot.user not in message.mentions
+            or len(message.content.strip().split()) != 1
+        ):
+            return
+
         if await self.is_blacklisted(message):
             return
 
@@ -138,16 +147,12 @@ class Mention(commands.Cog):
         ):
             return
 
-        if (
-            self.bot.user in message.mentions
-            and len(message.content.strip().split()) == 1
-        ):
-            guild_id = message.guild.id
-            data = await getConfig(guild_id)
-            prefix = data["prefix"]
+        guild_id = message.guild.id
+        data = await getConfig(guild_id)
+        prefix = data["prefix"]
 
-            view = MentionSelectView(message, self.bot, prefix)
-            await message.channel.send(view=view)
+        view = MentionSelectView(message, self.bot, prefix)
+        await message.channel.send(view=view)
 
 
 def setup(bot):

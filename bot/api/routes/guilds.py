@@ -33,6 +33,8 @@ import aiosqlite
 import json
 import os
 
+from utils.cache import invalidate
+
 if TYPE_CHECKING:
     from core.zyrox import zyrox
 
@@ -302,8 +304,8 @@ async def patch_guild_tickets(guild_id: int, data: TicketUpdate):
                 "INSERT INTO ticket_categories (guild_id, name, emoji, notified_roles, button_style, discord_category_id) VALUES (?, ?, ?, ?, ?, ?)",
                 (guild_id, cat.name, cat.emoji, roles_str, cat.button_style, cat.discord_category_id)
             )
-
     await db.commit()
+
     return {"status": "success", "guild_id": guild_id}
     return {"status": "success", "guild_id": guild_id}
 
@@ -383,7 +385,8 @@ async def patch_guild_leveling(guild_id: int, data: LevelingUpdate):
             raise HTTPException(status_code=400, detail="Invalid hex color format.")
 
     await db.commit()
-    
+    invalidate("lvl_set", guild_id)
+
     return {"status": "success", "guild_id": guild_id}
 
 

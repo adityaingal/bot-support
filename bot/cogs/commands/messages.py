@@ -60,18 +60,13 @@ class Messages(commands.Cog):
 
         today = datetime.utcnow().strftime("%Y-%m-%d")
         async with aiosqlite.connect(MESSAGES_DB) as db:
-            async with db.execute(
-                "SELECT count FROM messages WHERE guild_id = ? AND user_id = ? AND date = ?",
+            # UPDATE-first: was SELECT + UPDATE/INSERT (two statements per
+            # message in every guild). rowcount==0 means no row for today.
+            cursor = await db.execute(
+                "UPDATE messages SET count = count + 1 WHERE guild_id = ? AND user_id = ? AND date = ?",
                 (message.guild.id, message.author.id, today),
-            ) as cursor:
-                result = await cursor.fetchone()
-
-            if result:
-                await db.execute(
-                    "UPDATE messages SET count = count + 1 WHERE guild_id = ? AND user_id = ? AND date = ?",
-                    (message.guild.id, message.author.id, today),
-                )
-            else:
+            )
+            if cursor.rowcount == 0:
                 await db.execute(
                     "INSERT INTO messages (guild_id, user_id, date, count) VALUES (?, ?, ?, 1)",
                     (message.guild.id, message.author.id, today),

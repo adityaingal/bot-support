@@ -14,6 +14,7 @@ import discord
 import aiosqlite
 from discord.ext import commands
 from utils.Tools import blacklist_check, ignore_check
+from utils.cache import cached_or_fetch, invalidate
 from collections import defaultdict
 import time
 from utils.cv2 import CV2
@@ -45,6 +46,16 @@ class Media(commands.Cog):
     async def on_ready(self):
         await self.set_db()
 
+    async def get_media_channel(self, guild_id):
+        # Cached: this SELECT ran on EVERY message in EVERY guild, even where
+        # no media channel was ever configured.
+        async def _fetch():
+            async with aiosqlite.connect('db/media.db') as db:
+                async with db.execute('SELECT channel_id FROM media_channels WHERE guild_id = ?', (guild_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else None
+        return await cached_or_fetch("media_ch", _fetch, guild_id, ttl=30.0)
+
     @commands.hybrid_group(name="media", help="Setup Media channel, Media channel will not allow users to send messages other than media files.", invoke_without_command=True)
     @blacklist_check()
     @ignore_check()
@@ -69,6 +80,7 @@ class Media(commands.Cog):
 
             await db.execute('INSERT INTO media_channels (guild_id, channel_id) VALUES (?, ?)', (ctx.guild.id, channel.id))
             await db.commit()
+        invalidate("media_ch", ctx.guild.id)
 
         await ctx.reply(view=CV2("✅ Success", f"Successfully set {channel.mention} as the media-only channel.\n\n*Make sure to grant me \"Manage Messages\" permission for functioning of media channel.*"))
 
@@ -87,6 +99,7 @@ class Media(commands.Cog):
 
             await db.execute('DELETE FROM media_channels WHERE guild_id = ?', (ctx.guild.id,))
             await db.commit()
+        invalidate("media_ch", ctx.guild.id)
 
         await ctx.reply(view=CV2("✅ Success", "Successfully removed the media-only channel."))
 
@@ -178,14 +191,12 @@ class Media(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:
+        if message.author.bot or message.guild is None:
             return
 
-        async with aiosqlite.connect('db/media.db') as db:
-            async with db.execute('SELECT channel_id FROM media_channels WHERE guild_id = ?', (message.guild.id,)) as cursor:
-                media_channel = await cursor.fetchone()
+        media_channel = await self.get_media_channel(message.guild.id)
 
-        if media_channel and message.channel.id == media_channel[0]:
+        if media_channel and message.channel.id == media_channel:
             async with aiosqlite.connect('db/block.db') as block_db:
                 async with block_db.execute('SELECT 1 FROM user_blacklist WHERE user_id = ?', (message.author.id,)) as cursor:
                     blacklisted = await cursor.fetchone()

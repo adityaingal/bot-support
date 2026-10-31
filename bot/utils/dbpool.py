@@ -219,7 +219,26 @@ def install(aiosqlite_module, max_open_per_db: int = MAX_OPEN_PER_DB) -> None:
     def _make_factory(database, iter_chunk_size, kwargs):
         async def factory():
             conn = real_connect(database, iter_chunk_size=iter_chunk_size, **kwargs)
-            return await conn
+            conn = await conn
+            # Speed + reliability for every pooled connection:
+            #   WAL           — readers/writers stop blocking each other, commits
+            #                   no longer rewrite the whole journal (the default
+            #                   rollback journal made every messages/leveling
+            #                   write do a full fsync and stall the bot).
+            #   NORMAL        — WAL only fsyncs on checkpoint, not per commit.
+            #   busy_timeout  — wait instead of instantly raising
+            #                   "database is locked" when two writers collide
+            #                   (that error used to kill command replies).
+            for pragma in (
+                "PRAGMA journal_mode=WAL",
+                "PRAGMA synchronous=NORMAL",
+                "PRAGMA busy_timeout=5000",
+            ):
+                try:
+                    await conn.execute(pragma)
+                except Exception:
+                    pass
+            return conn
 
         return factory
 

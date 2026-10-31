@@ -42,22 +42,6 @@ class AntiLink(commands.Cog):
     async def get_punishment(self, guild_id):
         return await automod_cache.get_punishment(guild_id, 'Anti link')
 
-    async def get_ignored_channels(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT id FROM automod_ignored WHERE guild_id = ? AND type = 'channel'", (guild_id,))
-            return [row[0] for row in await cursor.fetchall()]
-
-    async def get_ignored_roles(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT id FROM automod_ignored WHERE guild_id = ? AND type = 'role'", (guild_id,))
-            return [row[0] for row in await cursor.fetchall()]
-
-    async def get_punishment(self, guild_id):
-        async with aiosqlite.connect("db/automod.db") as db:
-            cursor = await db.execute("SELECT punishment FROM automod_punishments WHERE guild_id = ? AND event = 'Anti link'", (guild_id,))
-            result = await cursor.fetchone()
-            return result[0] if result else None
-
     async def log_action(self, guild, user, channel, action, reason):
         async with aiosqlite.connect("db/automod.db") as db:
             cursor = await db.execute("SELECT log_channel FROM automod_logging WHERE guild_id = ?", (guild.id,))
@@ -79,7 +63,7 @@ class AntiLink(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:
+        if message.author.bot or message.guild is None:
             return
 
         guild = message.guild

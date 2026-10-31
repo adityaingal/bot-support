@@ -207,7 +207,10 @@ async def backup_now(reason: str = "periodic", force: bool = False) -> Dict[str,
         return {"success": False, "reason": "No valid DB_BACKUP_WEBHOOK_URL configured"}
 
     try:
-        zip_bytes, zip_hash, file_count, ts = build_backup_archive()
+        # Compressing ~38 databases takes seconds of CPU — running it inline
+        # froze the entire event loop (gateway + every command reply) each
+        # backup cycle. Keep it on a worker thread.
+        zip_bytes, zip_hash, file_count, ts = await asyncio.to_thread(build_backup_archive)
     except Exception as e:
         _err(f"Archive build failed: {e!r}")
         return {"success": False, "reason": f"Archive failed: {e}"}
@@ -355,10 +358,11 @@ async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str,
         except Exception as e:
             return {"success": False, "reason": f"Download failed: {e}"}
 
-        # Safe extraction
-        restored_files = 0
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        # Safe extraction — dozens of file writes, so run on a worker thread
+        # instead of stalling the event loop during startup.
+        def _extract_archive(archive: bytes) -> int:
+            restored = 0
+            with zipfile.ZipFile(io.BytesIO(archive)) as zf:
                 for member in zf.infolist():
                     # Sanitize to prevent Zip Slip directory traversal
                     clean = os.path.normpath(member.filename)
@@ -370,7 +374,11 @@ async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str,
 
                     with zf.open(member) as src, open(target_path, "wb") as dst:
                         shutil.copyfileobj(src, dst)
-                    restored_files += 1
+                    restored += 1
+            return restored
+
+        try:
+            restored_files = await asyncio.to_thread(_extract_archive, data)
 
             _state["last_restore_time"] = datetime.utcnow().isoformat()
             _state["last_restore_files"] = restored_files

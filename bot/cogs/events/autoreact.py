@@ -15,6 +15,7 @@ from discord.ext import commands
 import aiosqlite
 import re
 import asyncio
+from utils.cache import cached_or_fetch, invalidate
 
 class AutoReactListener(commands.Cog):
     def __init__(self, bot):
@@ -23,9 +24,13 @@ class AutoReactListener(commands.Cog):
         self.rate_limited_users = set()
 
     async def get_triggers(self, guild_id):
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("SELECT trigger, emojis FROM autoreact WHERE guild_id = ?", (guild_id,))
-            return await cursor.fetchall()
+        # Cached: this ran on EVERY guild message (usually for guilds with
+        # no triggers configured at all).
+        async def _fetch():
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("SELECT trigger, emojis FROM autoreact WHERE guild_id = ?", (guild_id,))
+                return await cursor.fetchall()
+        return await cached_or_fetch("autoreact", _fetch, guild_id, ttl=15.0)
 
     async def add_rate_limit(self, user_id):
         self.rate_limited_users.add(user_id)

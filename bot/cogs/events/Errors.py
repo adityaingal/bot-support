@@ -70,6 +70,8 @@ class Errors(Cog):
       return
 
     if isinstance(error, commands.CheckFailure):
+      # Most specific first: ignore-list explanations (they are why the
+      # check failed when an ignore rule matches).
       if ctx.guild is not None:
         try:
           data = await get_ignore_data(ctx.guild.id)
@@ -96,6 +98,35 @@ class Errors(Cog):
           if ctx.command.name in cmd or any(alias in cmd for alias in ctx.command.aliases):
             await ctx.reply(f"{ctx.author.mention} **This command is ignored in this guild. Please use other commands or try this command in a different guild**", delete_after=8)
             return
+
+      # MissingPermissions / BotMissingPermissions / NotOwner / custom checks
+      # are ALL CheckFailure subclasses. They used to fall through to a silent
+      # `return` here, which is why commands sometimes gave NO reply at all.
+      if isinstance(error, commands.BotMissingPermissions):
+        missing = ", ".join(error.missing_permissions)
+        await ctx.reply(f'** Huh! I need {missing} Permission to run the {ctx.command.qualified_name} command! Give me {missing} Permission**', delete_after=7)
+        return
+
+      if isinstance(error, commands.MissingPermissions):
+        missing = [perm.replace("_", " ").replace("guild", "server").title() for perm in error.missing_permissions]
+        fmt = "{}, and {}".format(", ".join(missing[:-1]), missing[-1]) if len(missing) > 2 else " and ".join(missing)
+        embed = discord.Embed(color=0xFF0000, description=f"**Ops! You don't have {fmt} Permission to run the {ctx.command.name} command!**")
+        embed.set_author(name="Missing Permissions", icon_url=self._bot_icon())
+        embed.set_footer(text=f"Requested by {ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+        await ctx.reply(embed=embed, delete_after=7)
+        ctx.command.reset_cooldown(ctx)
+        return
+
+      # Generic CheckFailure (is_owner, custom predicates, blacklist, ...):
+      # always answer — a command that fails must never look like the bot
+      # simply ignored the message.
+      embed = discord.Embed(
+        color=0xFF0000,
+        description=f"{ctx.author.mention} You can't use `{ctx.command.qualified_name}` right now.",
+      )
+      embed.set_author(name="Access Denied", icon_url=self._bot_icon())
+      embed.set_footer(text=f"Requested by {ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+      await ctx.reply(embed=embed, delete_after=8)
       return
 
     if isinstance(error, commands.TooManyArguments):
@@ -120,25 +151,9 @@ class Errors(Cog):
       ctx.command.reset_cooldown(ctx)
       return
 
-    if isinstance(error, commands.MissingPermissions):
-      missing = [perm.replace("_", " ").replace("guild", "server").title() for perm in error.missing_permissions]
-      fmt = "{}, and {}".format(", ".join(missing[:-1]), missing[-1]) if len(missing) > 2 else " and ".join(missing)
-      embed = discord.Embed(color=0xFF0000, description=f"**Ops! You don't have {fmt} Permission to run the {ctx.command.name} command!**")
-      embed.set_author(name="Missing Permissions", icon_url=self._bot_icon())
-
-      embed.set_footer(text=f"Requested by {ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
-      await ctx.reply(embed=embed, delete_after=7)
-      ctx.command.reset_cooldown(ctx)
-      return
-
     if isinstance(error, commands.BadArgument):
       await ctx.send_help(ctx.command)
       ctx.command.reset_cooldown(ctx)
-      return
-
-    if isinstance(error, commands.BotMissingPermissions):
-      missing = ", ".join(error.missing_permissions)
-      await ctx.reply(f'** Huh! I need {missing} Permission to run the {ctx.command.qualified_name}command! Give me {missing} Permission**', delete_after=7)
       return
 
     if isinstance(error, commands.CommandInvokeError):

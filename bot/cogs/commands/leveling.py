@@ -33,6 +33,9 @@ import requests
 import logging 
 
 
+from utils.cache import cached_or_fetch ,invalidate
+
+
 logger =logging .getLogger ('discord')
 
 
@@ -257,6 +260,7 @@ class LevelConfigModal (discord .ui .Modal ,title ="Leveling System Configuratio
 
                     await db .commit ()
                     logger .info (f"Settings saved successfully for guild {interaction.guild.id}")
+                    invalidate ("lvl_set" ,interaction .guild .id )
 
             except Exception as e :
                 return 
@@ -405,6 +409,13 @@ class Leveling (commands .Cog ):
             logger .error (f"Database initialization error: {e}")
 
     async def get_guild_settings (self ,guild_id :int )->dict :
+        """Get guild leveling settings (cached; writes invalidate the key)"""
+        async def _fetch ():
+            return await self ._fetch_guild_settings (guild_id )
+        settings =await cached_or_fetch ("lvl_set" ,_fetch ,guild_id ,ttl =15.0 )
+        return dict (settings )
+
+    async def _fetch_guild_settings (self ,guild_id :int )->dict :
         """Get guild leveling settings"""
         max_retries =5 
         for attempt in range (max_retries ):
@@ -470,81 +481,95 @@ class Leveling (commands .Cog ):
         }
 
     async def is_blacklisted (self ,guild_id :int ,user_id :int ,channel_id :int )->bool :
-        """Check if user or channel is blacklisted"""
+        """Check if user or channel is blacklisted (lists cached per guild)"""
         try :
-            async with aiosqlite .connect ("db/leveling.db")as db :
+            async def _fetch_channels ():
+                async with aiosqlite .connect ("db/leveling.db")as db :
 
-                async with db .cursor ()as cursor :
-                    await cursor .execute ("PRAGMA table_info(leveling_blacklist)")
-                    columns =[col [1 ]for col in await cursor .fetchall ()]
+                    async with db .cursor ()as cursor :
+                        await cursor .execute ("PRAGMA table_info(leveling_blacklist)")
+                        columns =[col [1 ]for col in await cursor .fetchall ()]
 
-                    if "target_type"not in columns :
+                        if "target_type"not in columns :
 
-                        logger .warning ("target_type column missing from leveling_blacklist table")
-                        return False 
+                            logger .warning ("target_type column missing from leveling_blacklist table")
+                            return None
 
+                    async with db .execute (
+                    "SELECT target_id FROM leveling_blacklist WHERE guild_id = ? AND target_type = 'channel'",
+                    (guild_id ,)
+                    )as cursor :
+                        return {row [0 ]for row in await cursor .fetchall ()}
 
-                async with db .execute (
-                "SELECT 1 FROM leveling_blacklist WHERE guild_id = ? AND target_id = ? AND target_type = 'channel'",
-                (guild_id ,channel_id )
-                )as cursor :
-                    if await cursor .fetchone ():
-                        return True 
+            async def _fetch_roles ():
+                async with aiosqlite .connect ("db/leveling.db")as db :
+                    async with db .execute (
+                    "SELECT target_id FROM leveling_blacklist WHERE guild_id = ? AND target_type = 'role'",
+                    (guild_id ,)
+                    )as cursor :
+                        return [row [0 ]for row in await cursor .fetchall ()]
 
+            blacklisted_channels =await cached_or_fetch ("lvl_bl_ch" ,_fetch_channels ,guild_id ,ttl =15.0 )
+            if blacklisted_channels is None :
+                return False
+            if channel_id in blacklisted_channels :
+                return True
 
-                guild =self .bot .get_guild (guild_id )
-                if guild :
-                    member =guild .get_member (user_id )
-                    if member :
-                        async with db .execute (
-                        "SELECT target_id FROM leveling_blacklist WHERE guild_id = ? AND target_type = 'role'",
-                        (guild_id ,)
-                        )as cursor :
-                            blacklisted_roles =[row [0 ]for row in await cursor .fetchall ()]
-                            if any (role .id in blacklisted_roles for role in member .roles ):
-                                return True 
-                return False 
+            guild =self .bot .get_guild (guild_id )
+            if guild :
+                member =guild .get_member (user_id )
+                if member :
+                    blacklisted_roles =await cached_or_fetch ("lvl_bl_roles" ,_fetch_roles ,guild_id ,ttl =15.0 )
+                    if any (role .id in blacklisted_roles for role in member .roles ):
+                        return True
+            return False
         except Exception as e :
             logger .error (f"Error checking blacklist: {e}")
-            return False 
+            return False
 
     async def get_xp_multiplier (self ,guild_id :int ,user_id :int ,channel_id :int )->float :
-        """Get XP multiplier for user"""
+        """Get XP multiplier for user (lists cached per guild)"""
         try :
             guild =self .bot .get_guild (guild_id )
             if not guild :
-                return 1.0 
+                return 1.0
 
             member =guild .get_member (user_id )
             if not member :
-                return 1.0 
+                return 1.0
 
-            total_multiplier =1.0 
-            async with aiosqlite .connect ("db/leveling.db")as db :
+            async def _fetch_role_mults ():
+                async with aiosqlite .connect ("db/leveling.db")as db :
+                    async with db .execute (
+                    "SELECT target_id, multiplier FROM xp_multipliers WHERE guild_id = ? AND target_type = 'role'",
+                    (guild_id ,)
+                    )as cursor :
+                        return await cursor .fetchall ()
 
-                async with db .execute (
-                "SELECT target_id, multiplier FROM xp_multipliers WHERE guild_id = ? AND target_type = 'role'",
-                (guild_id ,)
-                )as cursor :
-                    role_multipliers =await cursor .fetchall ()
+            async def _fetch_channel_mults ():
+                async with aiosqlite .connect ("db/leveling.db")as db :
+                    async with db .execute (
+                    "SELECT target_id, multiplier FROM xp_multipliers WHERE guild_id = ? AND target_type = 'channel'",
+                    (guild_id ,)
+                    )as cursor :
+                        return {row [0 ]:row [1 ]for row in await cursor .fetchall ()}
 
-                for role_id ,multiplier in role_multipliers :
-                    if any (role .id ==role_id for role in member .roles ):
-                        total_multiplier *=multiplier 
+            role_multipliers =await cached_or_fetch ("lvl_mr" ,_fetch_role_mults ,guild_id ,ttl =15.0 )
+            channel_multipliers =await cached_or_fetch ("lvl_mc" ,_fetch_channel_mults ,guild_id ,ttl =15.0 )
 
+            total_multiplier =1.0
+            for role_id ,multiplier in role_multipliers :
+                if any (role .id ==role_id for role in member .roles ):
+                    total_multiplier *=multiplier
 
-                async with db .execute (
-                "SELECT multiplier FROM xp_multipliers WHERE guild_id = ? AND target_id = ? AND target_type = 'channel'",
-                (guild_id ,channel_id )
-                )as cursor :
-                    channel_mult =await cursor .fetchone ()
-                    if channel_mult :
-                        total_multiplier *=channel_mult [0 ]
+            channel_mult =channel_multipliers .get (channel_id )
+            if channel_mult is not None :
+                total_multiplier *=channel_mult
 
-            return total_multiplier 
+            return total_multiplier
         except Exception as e :
             logger .error (f"Error getting XP multiplier: {e}")
-            return 1.0 
+            return 1.0
 
     @commands .Cog .listener ()
     async def on_message (self ,message ):
@@ -1792,6 +1817,7 @@ class Leveling (commands .Cog ):
                     ))
 
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
 
             final_embed =discord .Embed (
@@ -1847,6 +1873,7 @@ class Leveling (commands .Cog ):
                     await db .execute ("INSERT INTO leveling_settings (guild_id, xp_per_message) VALUES (?, ?)",(ctx .guild .id ,amount ))
 
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
             embed =discord .Embed (
             title =f"{TICK} XP Amount Updated",
@@ -1879,6 +1906,7 @@ class Leveling (commands .Cog ):
                     await db .execute ("INSERT INTO leveling_settings (guild_id, level_message) VALUES (?, ?)",(ctx .guild .id ,message ))
 
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
             embed =discord .Embed (
             title =f"{TICK} Level-Up Message Updated",
@@ -1917,6 +1945,7 @@ class Leveling (commands .Cog ):
                     await db .execute ("INSERT INTO leveling_settings (guild_id, embed_color) VALUES (?, ?)",(ctx .guild .id ,color_int ))
 
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
             embed =discord .Embed (
             title =f"{TICK} Embed Color Updated",
@@ -1952,6 +1981,7 @@ class Leveling (commands .Cog ):
                     await db .execute ("INSERT INTO leveling_settings (guild_id, thumbnail_enabled) VALUES (?, ?)",(ctx .guild .id ,1 if enabled else 0 ))
 
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
             embed =discord .Embed (
             title =f"{TICK} Thumbnail Setting Updated",
@@ -1984,6 +2014,7 @@ class Leveling (commands .Cog ):
                     await db .execute ("INSERT INTO leveling_settings (guild_id, cooldown_seconds) VALUES (?, ?)",(ctx .guild .id ,seconds ))
 
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
             embed =discord .Embed (
             title =f"{TICK} Cooldown Updated",
@@ -2108,6 +2139,8 @@ class Leveling (commands .Cog ):
                 (ctx .guild .id ,target_id ,target_type ,multiplier )
                 )
                 await db .commit ()
+                invalidate ("lvl_mr" ,ctx .guild .id )
+                invalidate ("lvl_mc" ,ctx .guild .id )
 
             await ctx .send (f"Added {multiplier}x multiplier for {target_type} {target}")
         except Exception as e :
@@ -2144,6 +2177,8 @@ class Leveling (commands .Cog ):
                 (ctx .guild .id ,target_id ,target_type )
                 )
                 await db .commit ()
+                invalidate ("lvl_mr" ,ctx .guild .id )
+                invalidate ("lvl_mc" ,ctx .guild .id )
 
             await ctx .send (f"Removed multiplier for {target_type} {target}")
         except Exception as e :
@@ -2217,6 +2252,8 @@ class Leveling (commands .Cog ):
                 (ctx .guild .id ,target_id ,target_type )
                 )
                 await db .commit ()
+                invalidate ("lvl_bl_ch" ,ctx .guild .id )
+                invalidate ("lvl_bl_roles" ,ctx .guild .id )
 
             await ctx .send (f"Added {target_type} {target} to the leveling blacklist.")
         except Exception as e :
@@ -2253,6 +2290,8 @@ class Leveling (commands .Cog ):
                 (ctx .guild .id ,target_id ,target_type )
                 )
                 await db .commit ()
+                invalidate ("lvl_bl_ch" ,ctx .guild .id )
+                invalidate ("lvl_bl_roles" ,ctx .guild .id )
 
             await ctx .send (f"Removed {target_type} {target} from the leveling blacklist.")
         except Exception as e :
@@ -2940,6 +2979,7 @@ class Leveling (commands .Cog ):
                     await db .execute ("INSERT INTO leveling_settings (guild_id, enabled) VALUES (?, 1)",(ctx .guild .id ,))
 
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
             embed =discord .Embed (
             title =f"{TICK} Leveling System Enabled",
@@ -2976,6 +3016,7 @@ class Leveling (commands .Cog ):
 
                 await db .execute ("UPDATE leveling_settings SET enabled = 0 WHERE guild_id = ?",(ctx .guild .id ,))
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
             embed =discord .Embed (
             title =f"{CROSS} Leveling System Disabled",
@@ -3147,6 +3188,7 @@ class Leveling (commands .Cog ):
                     await db .execute ("INSERT INTO leveling_settings (guild_id, channel_id) VALUES (?, ?)",(ctx .guild .id ,channel .id ))
 
                 await db .commit ()
+                invalidate ("lvl_set" ,ctx .guild .id )
 
             embed =discord .Embed (
             title ="📢 Level-Up Channel Set",

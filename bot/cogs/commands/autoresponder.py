@@ -17,6 +17,7 @@ from discord.ui import LayoutView, TextDisplay, Separator, Container
 import aiosqlite
 import os
 from utils.Tools import *
+from utils.cache import cached_or_fetch, invalidate
 from utils.cv2 import CV2, build_container
 
 
@@ -43,6 +44,17 @@ class AutoResponder(commands.Cog):
                 )
             ''')
             await db.commit()
+
+    async def get_responses(self, guild_id):
+        # One cached read per guild instead of a query on EVERY message.
+        async def _fetch():
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute(
+                    "SELECT LOWER(name), message FROM autoresponses WHERE guild_id = ?",
+                    (guild_id,),
+                ) as cursor:
+                    return dict(await cursor.fetchall())
+        return await cached_or_fetch("autoresp", _fetch, guild_id, ttl=30.0)
 
     @commands.group(name="autoresponder", invoke_without_command=True, aliases=['ar'], help="Manage autoresponders in the server.")
     @blacklist_check()
@@ -74,6 +86,7 @@ class AutoResponder(commands.Cog):
 
             await db.execute("INSERT INTO autoresponses (guild_id, name, message) VALUES (?, ?, ?)", (ctx.guild.id, name_lower, message))
             await db.commit()
+            invalidate("autoresp", ctx.guild.id)
             view = CV2(f"{TICK} Success", f"Created autoresponder `{name}` in {ctx.guild.name}")
             await ctx.reply(view=view)
 
@@ -92,6 +105,7 @@ class AutoResponder(commands.Cog):
 
             await db.execute("DELETE FROM autoresponses WHERE guild_id = ? AND LOWER(name) = ?", (ctx.guild.id, name_lower))
             await db.commit()
+            invalidate("autoresp", ctx.guild.id)
             view = CV2(f"{TICK} Success", f"Deleted autoresponder `{name}` in {ctx.guild.name}")
             await ctx.reply(view=view)
 
@@ -110,6 +124,7 @@ class AutoResponder(commands.Cog):
 
             await db.execute("UPDATE autoresponses SET message = ? WHERE guild_id = ? AND LOWER(name) = ?", (message, ctx.guild.id, name_lower))
             await db.commit()
+            invalidate("autoresp", ctx.guild.id)
             view = CV2(f"{TICK} Success", f"Edited autoresponder `{name}` in {ctx.guild.name}")
             await ctx.reply(view=view)
 
@@ -133,15 +148,18 @@ class AutoResponder(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author == self.bot.user:
+        if message.author.bot or message.guild is None:
             return
 
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT message FROM autoresponses WHERE guild_id = ? AND LOWER(name) = ?", (message.guild.id, message.content.lower())) as cursor:
-                row = await cursor.fetchone()
+        # Cached lookup: previously a DB query on EVERY message from EVERY
+        # author (including other bots), in every guild.
+        responses = await self.get_responses(message.guild.id)
+        if not responses:
+            return
 
-        if row:
-            await message.channel.send(row[0])
+        reply = responses.get(message.content.lower())
+        if reply:
+            await message.channel.send(reply)
 
 async def setup(bot):
     await bot.add_cog(AutoResponder(bot))

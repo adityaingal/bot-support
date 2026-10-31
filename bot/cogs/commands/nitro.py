@@ -19,13 +19,9 @@ class Nitro(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        if self.bot.user in message.mentions and (
-            "nitro" in message.content.lower() or "$nitro" in message.content.lower()
-        ):
-            ctx = await self.bot.get_context(message)
-            await self.bot.invoke(ctx)
+    # Removed the on_message get_context()+invoke() here: the bot's default
+    # process_commands already parses every message (mention is a valid
+    # prefix), so this was executing the nitro command a SECOND time.
 
     @commands.command(name="nitro")
     async def nitro(self, ctx):

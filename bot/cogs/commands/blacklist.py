@@ -17,6 +17,7 @@ from discord.ext import menus
 import aiosqlite
 import os
 from utils.Tools import *
+from utils.cache import cached_or_fetch, invalidate
 from utils.cv2 import CV2, build_container
 from typing import Union
 from discord.ui import LayoutView, TextDisplay, Separator, Container
@@ -112,18 +113,23 @@ class Blacklist(commands.Cog):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("INSERT INTO blacklist (guild_id, word) VALUES (?, ?)", (guild_id, word))
             await db.commit()
+        invalidate("bl_words", guild_id)
             
 
     async def remove_word_from_blacklist(self, guild_id, word):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM blacklist WHERE guild_id = ? AND word = ?", (guild_id, word))
             await db.commit()
+        invalidate("bl_words", guild_id)
             
 
     async def get_blacklisted_words(self, guild_id):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT word FROM blacklist WHERE guild_id = ?", (guild_id,)) as cursor:
-                return [row[0] async for row in cursor]
+        # Cached 30s: this ran on EVERY message in EVERY guild.
+        async def _fetch():
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("SELECT word FROM blacklist WHERE guild_id = ?", (guild_id,)) as cursor:
+                    return [row[0] async for row in cursor]
+        return await cached_or_fetch("bl_words", _fetch, guild_id, ttl=30.0)
                 
 
     async def is_user_bypassed(self, guild_id, user_id):
@@ -136,18 +142,23 @@ class Blacklist(commands.Cog):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("INSERT INTO bypass (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
             await db.commit()
+        invalidate("bl_busers", guild_id)
             
 
     async def remove_user_from_bypass(self, guild_id, user_id):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM bypass WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             await db.commit()
+        invalidate("bl_busers", guild_id)
             
 
     async def get_bypassed_users(self, guild_id):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT user_id FROM bypass WHERE guild_id = ?", (guild_id,)) as cursor:
-                return [row[0] async for row in cursor]
+        # Cached 30s: also ran on EVERY message.
+        async def _fetch():
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("SELECT user_id FROM bypass WHERE guild_id = ?", (guild_id,)) as cursor:
+                    return [row[0] async for row in cursor]
+        return await cached_or_fetch("bl_busers", _fetch, guild_id, ttl=30.0)
                 
 
     async def is_role_bypassed(self, guild_id, role_id):
@@ -160,28 +171,34 @@ class Blacklist(commands.Cog):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("INSERT INTO bypass_roles (guild_id, role_id) VALUES (?, ?)", (guild_id, role_id))
             await db.commit()
+        invalidate("bl_broles", guild_id)
             
 
     async def remove_role_from_bypass(self, guild_id, role_id):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM bypass_roles WHERE guild_id = ? AND role_id = ?", (guild_id, role_id))
             await db.commit()
+        invalidate("bl_broles", guild_id)
             
 
     async def get_bypassed_roles(self, guild_id):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT role_id FROM bypass_roles WHERE guild_id = ?", (guild_id,)) as cursor:
-                return [row[0] async for row in cursor]
+        # Cached 30s: also ran on EVERY message.
+        async def _fetch():
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute("SELECT role_id FROM bypass_roles WHERE guild_id = ?", (guild_id,)) as cursor:
+                    return [row[0] async for row in cursor]
+        return await cached_or_fetch("bl_broles", _fetch, guild_id, ttl=30.0)
 
 
     async def remove_all_words_from_blacklist(self, guild_id):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM blacklist WHERE guild_id = ?", (guild_id,))
             await db.commit()
+        invalidate("bl_words", guild_id)
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:
+        if message.author.bot or message.guild is None:
             return
 
         guild_id = str(message.guild.id)

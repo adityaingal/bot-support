@@ -222,21 +222,29 @@ class zyrox(commands.AutoShardedBot):
         return await cached_or_fetch("np", _fetch, user_id, ttl=60.0)
 
     async def get_prefix(self, message: discord.Message):
-        if message.guild:
-            guild_id = message.guild.id
-            is_np = await self._is_np(message.author.id)
-            data = await getConfig(guild_id)
-            prefix = data["prefix"]
-            if is_np:
-                return commands.when_mentioned_or(prefix, '')(self, message)
+        # Fail-safe: if the prefix DB read throws (locked/missing/corrupt),
+        # commands must still be parsed with the default prefix — otherwise
+        # get_context() raises and EVERY command silently gets no reply.
+        try:
+            if message.guild:
+                guild_id = message.guild.id
+                is_np = await self._is_np(message.author.id)
+                data = await getConfig(guild_id)
+                prefix = data["prefix"]
+                if is_np:
+                    return commands.when_mentioned_or(prefix, '')(self, message)
+                else:
+                    return commands.when_mentioned_or(prefix)(self, message)
             else:
-                return commands.when_mentioned_or(prefix)(self, message)
-        else:
-            is_np = await self._is_np(message.author.id)
-            if is_np:
-                return commands.when_mentioned_or('?', '')(self, message)
-            else:
-                return commands.when_mentioned_or('')(self, message)
+                is_np = await self._is_np(message.author.id)
+                if is_np:
+                    return commands.when_mentioned_or('?', '')(self, message)
+                else:
+                    return commands.when_mentioned_or('')(self, message)
+        except Exception:
+            if message.guild:
+                return commands.when_mentioned_or('>')(self, message)
+            return commands.when_mentioned_or('')(self, message)
 
     async def on_message_edit(self, before, after):
         ctx: Context = await self.get_context(after, cls=Context)

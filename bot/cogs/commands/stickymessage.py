@@ -17,6 +17,7 @@ import asyncio
 import os
 from discord.ext import commands
 from typing import Optional
+from utils.cache import cached_or_fetch, invalidate
 
 RED_THEME_COLOR = 0xFF0000
 
@@ -51,9 +52,24 @@ class StickyMessage(commands.Cog):
             """)
             await db.commit()
 
+    async def _has_sticky(self, channel_id):
+        # Fast gate: only channels that actually have a sticky (or just got
+        # one) should hit SQLite — everything else returns from cache.
+        async def _fetch():
+            async with aiosqlite.connect("db/stickymessages.db") as db:
+                cursor = await db.execute(
+                    "SELECT 1 FROM sticky_messages WHERE channel_id = ? AND enabled = 1 LIMIT 1",
+                    (channel_id,),
+                )
+                return await cursor.fetchone() is not None
+        return await cached_or_fetch("sticky_ex", _fetch, channel_id, ttl=5.0)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if not message.guild or (message.author.bot and message.author.id != self.bot.user.id):
+            return
+
+        if not await self._has_sticky(message.channel.id):
             return
 
         async with aiosqlite.connect("db/stickymessages.db") as db:
@@ -166,6 +182,7 @@ class StickyMessage(commands.Cog):
             
             await db.execute("DELETE FROM sticky_messages WHERE channel_id = ?", (channel.id,))
             await db.commit()
+        invalidate("sticky_ex", channel.id)
 
         embed = discord.Embed(title="Success", description=f"Sticky message in {channel.mention} has been removed.", color=RED_THEME_COLOR)
         await ctx.send(embed=embed)
@@ -266,6 +283,7 @@ class PlainTextModal(discord.ui.Modal, title='Plain Text Sticky Message'):
                 (self.ctx.guild.id, self.channel.id, 'plain', self.message_content.value, delay)
             )
             await db.commit()
+        invalidate("sticky_ex", self.channel.id)
 
         embed = discord.Embed(title="Sticky Created", description=f"Successfully created a plain text sticky in {self.channel.mention}.", color=RED_THEME_COLOR)
         await interaction.response.edit_message(embed=embed, view=None)
@@ -300,6 +318,7 @@ class EmbedModal(discord.ui.Modal, title='Embed Sticky Message'):
                 (self.ctx.guild.id, self.channel.id, 'embed', json.dumps(embed_data), delay)
             )
             await db.commit()
+        invalidate("sticky_ex", self.channel.id)
         
         embed = discord.Embed(title="Sticky Embed Created", description=f"Successfully created an embed sticky in {self.channel.mention}.", color=RED_THEME_COLOR)
         await interaction.response.edit_message(embed=embed, view=None)
