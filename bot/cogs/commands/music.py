@@ -504,10 +504,10 @@ class Music(commands.Cog):
     # connects; env vars override the primary (LAVALINK_HOST/PASSWORD/...).
     LAVALINK_CANDIDATES = [
         # (host, password, secure, port)
-        ("lavalink.nazha.online", "nazhafreelava", True, ""),
         ("lavalink.jirayu.net", "youshallnotpass", True, ""),
         ("lavalink-v4.triniumhost.com", "free", True, ""),
         ("lavalink.serenetia.com", "https://dsc.gg/ajidevserver", True, ""),
+        ("lavalink.nazha.online", "nazhafreelava", True, ""),
     ]
 
     @staticmethod
@@ -515,6 +515,31 @@ class Music(commands.Cog):
         if secure:
             return f"https://{host}"
         return f"http://{host}:{port}" if port else f"http://{host}"
+
+    @staticmethod
+    async def _preflight_ws(uri: str, password: str, user_id: str) -> str | None:
+        """Handshake-probe a node's websocket before Pool.connect.
+
+        wavelink treats non-401/404 handshake errors (e.g. Cloudflare 403)
+        as retryable and loops with backoff, so a blocked node burns the
+        whole per-candidate timeout. Replicating the same handshake with
+        aiohttp fails fast: 401/403/404/network errors -> skip candidate.
+        Returns None when the handshake succeeds (node is viable).
+        """
+        url = f"{uri}/v4/websocket"
+        headers = {
+            "Authorization": password,
+            "User-Id": user_id,
+            "Client-Name": f"Wavelink/{wavelink.__version__}",
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
+                async with session.ws_connect(url=url, headers=headers):
+                    return None
+        except aiohttp.WSServerHandshakeError as e:
+            return f"HTTP {e.status}"
+        except Exception as e:
+            return f"{type(e).__name__}"
 
     async def connect_nodes(self) -> None:
         # wavelink builds its handshake headers from client.user (it asserts),
@@ -538,12 +563,22 @@ class Music(commands.Cog):
         else:
             candidates = list(self.LAVALINK_CANDIDATES)
 
+        user_id = str(self.client.user.id)
+
         # Primary first, in isolation: Pool.connect() iterates sequentially and
         # lets non-wavelink errors (timeouts, connector errors) propagate, so a
         # dead alternate could otherwise abort or delay the whole batch.
         while True:
             for i, (host, pwd, secure, port) in enumerate(candidates):
                 uri = self._node_uri(host, secure, port)
+                skip_reason = await self._preflight_ws(uri, pwd, user_id)
+                if skip_reason is not None:
+                    print(
+                        f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
+                        f"skipped ({uri}): preflight {skip_reason}",
+                        flush=True,
+                    )
+                    continue
                 node = wavelink.Node(uri=uri, password=pwd)
                 # Reference kept on the bot so graceful shutdown can close the
                 # node's aiohttp session (Pool.close() does not close it).
