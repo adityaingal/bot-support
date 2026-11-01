@@ -600,3 +600,4 @@ Runs automatically on startup when `EMOJI_SYNC=true`:
 © 2026 OGADI — MIT License
 
 </div>
+"# botall" 
