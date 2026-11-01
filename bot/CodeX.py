@@ -286,9 +286,10 @@ MAX_RATE_LIMIT_WAITS = 30
 RATE_LIMIT_BASE_WAIT = 120.0
 RATE_LIMIT_MAX_WAIT = 1800.0
 # Hard ceiling on any rate-limit sleep: while blocked we poll at this
-# interval (600s = ~86 probes over a 14h block — far below Discord's
-# invalid-request limits) instead of trusting Retry-After blindly.
-RATE_LIMIT_POLL_MAX = 600.0
+# interval instead of trusting Retry-After blindly. 60s = max ~1 minute
+# of extra downtime after the edge ban lifts (one tiny users/@me probe
+# per minute; in-process probes observed not to renew bans).
+RATE_LIMIT_POLL_MAX = 60.0
 # Ceiling for honouring a 429's Retry-After. Observed blocks on Render's
 # shared egress IPs: 7.2h, 15.4h (Retry-After=55333) and ~23h
 # (discord-api-docs issue #8570 - same Render 429-after-idle pattern).
