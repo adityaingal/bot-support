@@ -1041,11 +1041,13 @@ async def main():
                         retry_after = 0.0
 
                     # The patched HTTPClient already trips the breaker for
-                    # long-Retry-After/HTML 429s, but login runs through a
-                    # raw aiohttp path in some discord.py versions. Report
-                    # explicitly so REST is suppressed during the ban no
-                    # matter which path raised.
-                    if retry_after > 0:
+                    # long-Retry-After/HTML 429s, and login goes through the
+                    # same HTTPClient, so the breaker is normally already
+                    # tripped by the time we reach here. Only report a long
+                    # Retry-After (real edge ban) as a fallback; a short one
+                    # is a transient route rate limit and must not suppress
+                    # all Discord REST.
+                    if retry_after >= cloudbreaker.EDGE_BAN_MIN_RETRY_AFTER:
                         try:
                             cloudbreaker.report_ban(
                                 min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP))
