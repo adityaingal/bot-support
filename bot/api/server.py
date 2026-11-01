@@ -31,6 +31,12 @@ from api.dependencies import verify_api_key, limiter
 from api.db_manager import db_manager
 from utils.keepalive import snapshot as keepalive_snapshot
 from utils import cloudbreaker
+from utils import dbhealth
+
+try:
+    from utils import db_backup
+except Exception:  # pragma: no cover
+    db_backup = None
 
 # Configure logging
 logger = logging.getLogger("api_request_logs")
@@ -171,6 +177,21 @@ DASHBOARD_HTML = """<!doctype html>
       <div class="muted" id="attempt" style="font-size:12px"></div>
     </div>
     <div class="card">
+      <h2>Discord REST</h2>
+      <div class="big"><span class="badge" id="rest">...</span></div>
+      <div class="muted" id="restdetail" style="margin-top:8px;font-size:12px"></div>
+    </div>
+    <div class="card">
+      <h2>Database</h2>
+      <div class="big"><span class="badge" id="db">...</span></div>
+      <div class="muted" id="dbdetail" style="margin-top:8px;font-size:12px"></div>
+    </div>
+    <div class="card">
+      <h2>Lavalink</h2>
+      <div class="big"><span class="badge" id="lava">...</span></div>
+      <div class="muted" id="lavdetail" style="margin-top:8px;font-size:12px"></div>
+    </div>
+    <div class="card">
       <h2>Guilds / Users</h2>
       <div class="big"><span id="guilds">-</span> / <span id="users">-</span></div>
     </div>
@@ -232,6 +253,36 @@ async function tick() {
     document.getElementById('users').textContent = (d.users != null) ? d.users : '-';
     const le = (d.discord && d.discord.last_error) || '';
     document.getElementById('err').textContent = le || 'none';
+    // REST state machine
+    const rest = d.rest || {};
+    const restEl = document.getElementById('rest');
+    const rs = rest.state || 'unknown';
+    restEl.textContent = rs;
+    restEl.className = 'badge ' + (rs === 'NORMAL' ? 'ok' : (rs === 'SUSPECTED_LIMIT' ? 'warn' : (rs === 'unknown' ? 'warn' : 'bad')));
+    let rd = [];
+    if (rest.cf_ray) rd.push('CF-RAY ' + rest.cf_ray);
+    if (rest.classification) rd.push(rest.classification);
+    if (rest.remaining_s > 0) rd.push(Math.round(rest.remaining_s) + 's left');
+    if (rest.last_ok) rd.push('last ok ' + rest.last_ok);
+    document.getElementById('restdetail').textContent = rd.join(' · ') || 'idle';
+    // Database
+    const db = d.database || {};
+    const dbEl = document.getElementById('db');
+    const dbs = db.status || 'unknown';
+    dbEl.textContent = String(dbs).toUpperCase();
+    dbEl.className = 'badge ' + (dbs === 'healthy' ? 'ok' : (dbs === 'degraded' ? 'bad' : 'warn'));
+    const bk = db.backup || {};
+    document.getElementById('dbdetail').textContent =
+      (db.databases || 0) + ' dbs · corrupt ' + (db.corrupt || 0) +
+      ' · backup ' + (bk.last_status || '-') + (bk.op_in_progress ? ' · ' + bk.op_in_progress : '');
+    // Lavalink
+    const lv = d.lavalink || {};
+    const lvEl = document.getElementById('lava');
+    const lvs = lv.status || 'unknown';
+    lvEl.textContent = String(lvs).toUpperCase();
+    lvEl.className = 'badge ' + (lvs === 'connected' ? 'ok' : (lvs === 'disconnected' ? 'warn' : 'bad'));
+    document.getElementById('lavdetail').textContent =
+      (lv.connected != null) ? (lv.connected + '/' + (lv.nodes || 0) + ' nodes') : '';
     document.getElementById('upd').textContent =
       'status updated ' + ((d.discord && d.discord.updated) || '?') + ' · fetched in ' + ms + ' ms';
   } catch (e) {
@@ -356,6 +407,55 @@ def create_app() -> FastAPI:
             },
             "keepalive": keepalive_snapshot(),
         }
+
+        # REST recovery state (cloudbreaker state machine — no secrets).
+        try:
+            payload["rest"] = cloudbreaker.snapshot()
+        except Exception:
+            payload["rest"] = {"state": "unknown"}
+
+        # Database health + backup status.
+        try:
+            health = dbhealth.get_health()
+            payload["database"] = {
+                "status": health.get("status", "unchecked"),
+                "databases": health.get("databases", 0),
+                "size_bytes": health.get("size_bytes", 0),
+                "corrupt": len(health.get("corrupt") or []),
+                "repaired": len(health.get("repaired") or []),
+                "last_integrity_check": health.get("last_integrity_check"),
+            }
+        except Exception:
+            payload["database"] = {"status": "unknown"}
+        if db_backup is not None:
+            try:
+                st = db_backup.get_status()
+                payload["database"]["backup"] = {
+                    "enabled": st.get("enabled"),
+                    "last_backup": st.get("last_backup_time"),
+                    "last_status": st.get("last_backup_status"),
+                    "last_restore": st.get("last_restore_time"),
+                    "op_in_progress": st.get("op_in_progress"),
+                    "interval_s": st.get("interval_seconds"),
+                }
+            except Exception:
+                pass
+
+        # Lavalink node state (read-only pool inspection).
+        try:
+            import wavelink
+            nodes = list(wavelink.Pool.nodes.values())
+            connected = sum(
+                1 for n in nodes
+                if str(getattr(n, "status", "" )).endswith("CONNECTED")
+            )
+            payload["lavalink"] = {
+                "status": "connected" if connected else ("disconnected" if nodes else "unavailable"),
+                "nodes": len(nodes),
+                "connected": connected,
+            }
+        except Exception:
+            payload["lavalink"] = {"status": "unknown"}
 
         # Startup diagnostics (no secrets): lets you see WHY the bot is not
         # online from a single GET instead of digging through Render logs.

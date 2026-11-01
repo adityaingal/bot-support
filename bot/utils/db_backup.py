@@ -26,6 +26,7 @@ import io
 import sys
 import json
 import time
+import sqlite3
 import zipfile
 import hashlib
 import asyncio
@@ -48,6 +49,11 @@ except Exception:  # pragma: no cover - fall back to a no-op shim
 
     cloudbreaker = _NoopBreaker()
 
+try:
+    from utils import dbhealth
+except Exception:  # pragma: no cover
+    dbhealth = None
+
 # Treat a 429 this long as a Cloudflare edge ban (same threshold as cloudbreaker).
 EDGE_BAN_MIN_RETRY_AFTER = 600.0
 
@@ -65,6 +71,9 @@ MARKER_FILE = os.path.join(BOT_DIR, ".db_restored")
 # Internal state tracking
 _backup_task: Optional[asyncio.Task] = None
 _last_backup_hash: Optional[str] = None
+# One backup/restore operation at a time — a restore during a backup (or
+# vice versa) could interleave partial writes.
+_op_lock = asyncio.Lock()
 _state: Dict[str, Any] = {
     "last_backup_time": None,
     "last_backup_files": 0,
@@ -73,6 +82,7 @@ _state: Dict[str, Any] = {
     "last_restore_time": None,
     "last_restore_files": 0,
     "channel_id": None,
+    "op_in_progress": None,
 }
 
 
@@ -200,6 +210,25 @@ def _collect_files_to_backup() -> list[Tuple[str, str]]:
     return files
 
 
+def _read_db_consistent(abs_path: str) -> bytes:
+    """Snapshot one SQLite file with the online backup API.
+
+    Copying a live WAL database with a plain read can capture a torn
+    mid-write state. sqlite3.Connection.backup() produces a consistent
+    snapshot regardless of concurrent writers.
+    """
+    src = sqlite3.connect(f"file:{abs_path}?mode=ro", uri=True, timeout=10)
+    try:
+        dst = sqlite3.connect(":memory:")
+        try:
+            src.backup(dst)
+            return sqlite3.serialize(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+
+
 def build_backup_archive() -> Tuple[bytes, str, int, str]:
     """
     Compresses target files into an in-memory zip archive.
@@ -214,8 +243,17 @@ def build_backup_archive() -> Tuple[bytes, str, int, str]:
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for abs_path, rel_path in sorted(files, key=lambda x: x[1]):
             try:
-                with open(abs_path, "rb") as f:
-                    content = f.read()
+                if abs_path.endswith(".db"):
+                    try:
+                        content = _read_db_consistent(abs_path)
+                    except Exception as e:
+                        _warn(f"Consistent snapshot failed for {rel_path} ({e!r}); "
+                              f"falling back to raw read")
+                        with open(abs_path, "rb") as f:
+                            content = f.read()
+                else:
+                    with open(abs_path, "rb") as f:
+                        content = f.read()
                 hasher.update(rel_path.encode("utf-8"))
                 hasher.update(content)
                 zf.writestr(rel_path, content)
@@ -244,6 +282,21 @@ async def backup_now(reason: str = "periodic", force: bool = False) -> Dict[str,
         _warn("Cloudflare ban active — skipping backup upload this cycle")
         _state["last_backup_status"] = "skipped (cloudflare ban)"
         return {"success": False, "reason": "Cloudflare ban active"}
+
+    if _op_lock.locked():
+        _emit("Another backup/restore operation is running — skipping this cycle.")
+        return {"success": False, "reason": "another operation in progress"}
+
+    async with _op_lock:
+        _state["op_in_progress"] = "backup"
+        try:
+            return await _backup_now_locked(reason, force, webhook_url)
+        finally:
+            _state["op_in_progress"] = None
+
+
+async def _backup_now_locked(reason: str, force: bool, webhook_url: str) -> Dict[str, Any]:
+    global _last_backup_hash
 
     try:
         # Compressing ~38 databases takes seconds of CPU — running it inline
@@ -334,19 +387,12 @@ async def backup_now(reason: str = "periodic", force: bool = False) -> Dict[str,
             return {"success": False, "reason": str(e)}
 
 
-async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str, Any]:
-    """
-    Downloads the latest backup zip from the webhook channel and extracts it.
-    Uses bot token to access Discord REST API channel history.
-    """
+async def _fetch_latest_backup_zip(bot_token: str) -> Dict[str, Any]:
+    """Locate and download the newest backup zip from the webhook channel.
+    Returns {success, data?, filename?, reason?}."""
     webhook_url = get_webhook_url()
     if not is_valid_webhook_url(webhook_url):
         return {"success": False, "reason": "No valid DB_BACKUP_WEBHOOK_URL configured"}
-
-    # Raw REST channel fetch — bypasses cloudbreaker's HTTPClient patch.
-    if cloudbreaker.is_banned():
-        _warn("Cloudflare ban active — skipping Discord restore this cycle")
-        return {"success": False, "reason": "Cloudflare ban active"}
 
     timeout = aiohttp.ClientTimeout(total=45)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -354,32 +400,22 @@ async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str,
         if not channel_id:
             return {"success": False, "reason": "Could not determine backup channel_id"}
 
-        _emit(f"Checking Discord channel {channel_id} for latest database backup...")
-
         headers = {
             "Authorization": f"Bot {bot_token}",
             "User-Agent": "DiscordBot (https://discord.com, 2.0) Python/3.11 aiohttp/3.9",
         }
-
-        # Fetch recent messages from the backup channel
         messages_url = f"https://discord.com/api/v10/channels/{channel_id}/messages?limit=20"
         try:
             async with session.get(messages_url, headers=headers) as resp:
                 if resp.status == 429:
                     _maybe_report_edge_ban(resp)
-                    text = await resp.text()
-                    _err(f"Failed to fetch channel messages (HTTP 429): {text[:200]}")
                     return {"success": False, "reason": "HTTP 429 fetching messages"}
                 if resp.status != 200:
-                    text = await resp.text()
-                    _err(f"Failed to fetch channel messages (HTTP {resp.status}): {text[:200]}")
                     return {"success": False, "reason": f"HTTP {resp.status} fetching messages"}
                 messages = await resp.json()
         except Exception as e:
-            _err(f"Failed to connect to Discord API: {e!r}")
             return {"success": False, "reason": str(e)}
 
-        # Locate latest message with a .zip attachment
         target_attachment = None
         for msg in messages:
             for att in msg.get("attachments", []):
@@ -391,15 +427,10 @@ async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str,
                 break
 
         if not target_attachment:
-            _emit("No database backup zip found in channel history.")
             return {"success": False, "reason": "No backup archive found in channel"}
 
         download_url = target_attachment.get("url")
         fname = target_attachment.get("filename")
-        size_bytes = target_attachment.get("size", 0)
-        _emit(f"Found backup archive: {fname} ({round(size_bytes / 1024, 1)} KB). Downloading...")
-
-        # Download attachment
         try:
             async with session.get(download_url) as resp:
                 if resp.status != 200:
@@ -407,42 +438,137 @@ async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str,
                 data = await resp.read()
         except Exception as e:
             return {"success": False, "reason": f"Download failed: {e}"}
+        return {"success": True, "data": data, "filename": fname}
 
-        # Safe extraction — dozens of file writes, so run on a worker thread
-        # instead of stalling the event loop during startup.
-        def _extract_archive(archive: bytes) -> int:
-            restored = 0
-            with zipfile.ZipFile(io.BytesIO(archive)) as zf:
-                for member in zf.infolist():
-                    # Sanitize to prevent Zip Slip directory traversal
-                    clean = os.path.normpath(member.filename)
-                    if clean.startswith("..") or os.path.isabs(clean):
-                        continue
 
-                    target_path = os.path.join(BOT_DIR, clean)
-                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+def _safe_member_path(member_name: str) -> str | None:
+    """Sanitized target path for a zip member, or None to skip."""
+    clean = os.path.normpath(member_name)
+    if clean.startswith("..") or os.path.isabs(clean):
+        return None
+    return os.path.join(BOT_DIR, clean)
 
-                    with zf.open(member) as src, open(target_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    restored += 1
-            return restored
 
+def _extract_validated(archive: bytes, only_file: str | None = None) -> Dict[str, Any]:
+    """Extract to a temp dir, validate every .db with quick_check, then
+    atomically move validated files into place. On ANY validation failure
+    the originals are left untouched.
+
+    Returns {restored: int, reason?: str}. Runs on a worker thread.
+    """
+    staging = os.path.join(BOT_DIR, ".restore_tmp")
+    if os.path.isdir(staging):
+        shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging, exist_ok=True)
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+            corrupt_member = zf.testzip()
+            if corrupt_member is not None:
+                return {"restored": 0, "reason": f"zip CRC failure on {corrupt_member}"}
+
+            extracted: list[tuple[str, str]] = []  # (staged_path, target_path)
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                target = _safe_member_path(member.filename)
+                if target is None:
+                    continue
+                if only_file is not None and os.path.basename(target) != only_file:
+                    continue
+                staged = os.path.join(staging, os.path.basename(target))
+                with zf.open(member) as src, open(staged, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                extracted.append((staged, target))
+
+            if not extracted:
+                return {"restored": 0, "reason": "no matching files in archive"}
+
+            # Validate staged SQLite files BEFORE touching the originals.
+            for staged, target in extracted:
+                if target.endswith(".db"):
+                    ok, detail = dbhealth.quick_check_file(staged) if dbhealth else (True, "ok")
+                    if not ok:
+                        return {"restored": 0,
+                                "reason": f"staged {os.path.basename(target)} failed integrity: {detail}"}
+                elif target.endswith(".json"):
+                    try:
+                        with open(staged, "r", encoding="utf-8") as f:
+                            json.load(f)
+                    except Exception as e:
+                        return {"restored": 0,
+                                "reason": f"staged {os.path.basename(target)} invalid JSON: {e}"}
+
+            # Atomic per-file move into place.
+            for staged, target in extracted:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                os.replace(staged, target)
+            return {"restored": len(extracted)}
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str, Any]:
+    """
+    Downloads the latest backup zip and restores it with full validation:
+    CRC check, per-database integrity check, atomic per-file replacement.
+    Originals are never touched unless every staged file validates.
+    """
+    if cloudbreaker.is_banned():
+        _warn("Cloudflare ban active — skipping Discord restore this cycle")
+        return {"success": False, "reason": "Cloudflare ban active"}
+
+    if _op_lock.locked():
+        return {"success": False, "reason": "another operation in progress"}
+
+    async with _op_lock:
+        _state["op_in_progress"] = "restore"
         try:
-            restored_files = await asyncio.to_thread(_extract_archive, data)
-
+            fetched = await _fetch_latest_backup_zip(bot_token)
+            if not fetched.get("success"):
+                _err(f"Restore fetch failed: {fetched.get('reason')}")
+                return {"success": False, "reason": fetched.get("reason")}
+            fname = fetched.get("filename")
+            _emit(f"Restoring from {fname} (validated extract)...")
+            result = await asyncio.to_thread(_extract_validated, fetched["data"], None)
+            if result["restored"] == 0:
+                _err(f"Restore aborted, originals untouched: {result.get('reason')}")
+                return {"success": False, "reason": result.get("reason")}
             _state["last_restore_time"] = datetime.utcnow().isoformat()
-            _state["last_restore_files"] = restored_files
-
-            # Write restore marker
+            _state["last_restore_files"] = result["restored"]
             with open(MARKER_FILE, "w", encoding="utf-8") as f:
-                f.write(json.dumps({"timestamp": time.time(), "file": fname, "count": restored_files}))
-
-            _emit(f"Database restore complete! Restored {restored_files} files from {fname}")
-            return {"success": True, "filename": fname, "files": restored_files}
-
+                f.write(json.dumps({"timestamp": time.time(), "file": fname,
+                                    "count": result["restored"]}))
+            _emit(f"Database restore complete: {result['restored']} files from {fname}")
+            return {"success": True, "filename": fname, "files": result["restored"]}
         except Exception as e:
-            _err(f"Extraction failed: {e!r}")
-            return {"success": False, "reason": f"Extraction failed: {e}"}
+            _err(f"Restore failed: {e!r}")
+            return {"success": False, "reason": str(e)}
+        finally:
+            _state["op_in_progress"] = None
+
+
+async def restore_single_file(bot_token: str, filename: str) -> bool:
+    """Recovery entry point for utils.dbhealth: restore ONE database file
+    from the newest backup. Validation failures leave the path untouched."""
+    if cloudbreaker.is_banned() or _op_lock.locked():
+        return False
+    async with _op_lock:
+        _state["op_in_progress"] = f"restore:{filename}"
+        try:
+            fetched = await _fetch_latest_backup_zip(bot_token)
+            if not fetched.get("success"):
+                return False
+            result = await asyncio.to_thread(_extract_validated, fetched["data"], filename)
+            if result["restored"] == 0:
+                _warn(f"Single-file restore of {filename} aborted: {result.get('reason')}")
+                return False
+            _emit(f"Recovered {filename} from backup ({result['restored']} file)")
+            return True
+        except Exception as e:
+            _warn(f"Single-file restore error for {filename}: {e!r}")
+            return False
+        finally:
+            _state["op_in_progress"] = None
 
 
 async def restore_if_needed(bot_token: str) -> bool:

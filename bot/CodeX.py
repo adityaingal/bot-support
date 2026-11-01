@@ -223,6 +223,7 @@ from utils import keepalive
 from utils import db_backup
 from utils.http import http_client, describe_http_failure, log_discord_once
 from utils import cloudbreaker
+from utils import dbhealth
 from utils.cloudbreaker import CloudflareBanError
 
 cloudbreaker.install()
@@ -300,6 +301,10 @@ SHUTDOWN_TIMEOUT = 20  # seconds to wait for a running shutdown before moving on
 # through Render logs while the bot is not yet online).
 startup_state = {"phase": "init", "attempt": 0, "last_error": None, "next_retry_in": None}
 
+# Render Singapore has no IPv6 route — cache the negative result so the
+# escape-hatch probe runs once per process instead of on every retry.
+_ipv6_unavailable = False
+
 
 def _set_startup(**kwargs) -> None:
     try:
@@ -352,6 +357,10 @@ async def _discord_blocked_over(family: int) -> bool:
                 return blocked
     except Exception as e:
         log_warning(f"[netcheck] discord.com over {label} unreachable: {type(e).__name__}: {e}")
+        # No route / no DNS for this family (Render Singapore has no IPv6):
+        # remember so the escape-hatch probe stops running every retry.
+        if family == socket.AF_INET6:
+            globals()["_ipv6_unavailable"] = True
         return True
 
 
@@ -390,13 +399,62 @@ async def update_stats():
         await asyncio.sleep(1800) # Update every 30 minutes
 
 
+def _command_tree_hash() -> str:
+    """Stable hash of every command/group signature in the tree.
+
+    Used to skip the full PUT /commands sync when nothing changed since
+    the last successful sync (saves a large REST call on every restart).
+    """
+    import hashlib
+
+    def _walk(cmds):
+        rows = []
+        for c in cmds:
+            params = []
+            for p in getattr(c, "parameters", []) or []:
+                try:
+                    params.append(f"{p.name}:{getattr(getattr(p.type, 'name', None), 'name', p.type)}")
+                except Exception:
+                    params.append(getattr(p, "name", "?"))
+            rows.append(f"{c.name}|{getattr(c, 'description', '') or ''}|{','.join(params)}")
+            if hasattr(c, "commands"):
+                rows.extend(_walk(c.commands))
+        return rows
+
+    blob = "\n".join(sorted(_walk(client.tree.get_commands())))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+_SYNC_HASH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db", ".cmd_tree_hash")
+
+
 async def sync_commands():
-    """Sync the application command tree (once per process)."""
+    """Sync the application command tree (once per process, and only when
+    the command definitions changed since the last successful sync)."""
     try:
+        if os.getenv("DISCORD_SYNC_ON_START", "true").strip().lower() != "true":
+            log_info("[DISCORD] Command tree sync disabled via DISCORD_SYNC_ON_START")
+            return
+        new_hash = _command_tree_hash()
+        try:
+            if os.path.exists(_SYNC_HASH_FILE):
+                with open(_SYNC_HASH_FILE, "r", encoding="utf-8") as f:
+                    if f.read().strip() == new_hash:
+                        log_info("[DISCORD] Command tree unchanged - sync skipped")
+                        return
+        except Exception:
+            pass
         synced = await client.tree.sync()
         all_commands = list(client.commands)
+        try:
+            with open(_SYNC_HASH_FILE, "w", encoding="utf-8") as f:
+                f.write(new_hash)
+        except Exception:
+            pass
         log_info(f"Synced {len(all_commands)} prefix commands and {len(synced)} slash commands")
     except Exception as e:
+        # A failed sync must not block anything else; the hash is NOT
+        # updated so the next start retries.
         log_warning(f"Command tree sync failed: {e!r}")
 
 
@@ -461,13 +519,14 @@ async def on_ready():
     except Exception as e:
         log_warning(f"cloudbreaker probe start failed: {e!r}")
 
-    # Started exactly once per process — on_ready can fire again on reconnect.
-    #
+    # Staggered task startup (post-recovery burst control): core sync first,
+    # optional work later — never resume everything at once after a ban.
     # Emoji sync runs as its own task: it makes several Discord API round
     # trips (and sleeps 0.5s between writes), so awaiting it here delayed
     # slash-command sync, stats and the DB backup task by that whole window.
     async def _emoji_sync_worker():
         try:
+            await asyncio.sleep(120)  # priority 4: well after core tasks
             await run_sync(TOKEN)
         except Exception as e:
             log_warning(f"Emoji sync skipped/failed: {e!r}")
@@ -476,7 +535,7 @@ async def on_ready():
     _sync_task = asyncio.create_task(sync_commands(), name="support:sync_commands")
     _stats_task = asyncio.create_task(update_stats(), name="support:update_stats")
     try:
-        db_backup.start(client)
+        db_backup.start(client)  # own task; initial delay of 120s built in
     except Exception as e:
         log_warning(f"Database backup task start failed: {e!r}")
     log_info("Background tasks started.")
@@ -545,6 +604,25 @@ async def on_command_completion(context: commands.Context) -> None:
 
 
 # --- Utility Commands ---
+@client.command(name='dbstatus', hidden=True)
+@commands.is_owner()
+async def dbstatus(ctx: Context):
+    """Owner-only: database health, backup and REST recovery status."""
+    health = dbhealth.get_health()
+    backup = db_backup.get_status()
+    rest = cloudbreaker.snapshot()
+    lines = [
+        f"**Database:** {health.get('status', '?')} — {health.get('databases', 0)} files, "
+        f"{round((health.get('size_bytes') or 0) / 1024, 1)} KB",
+        f"**Integrity check:** {health.get('last_integrity_check') or 'never'}",
+        f"**Corrupt:** {len(health.get('corrupt') or [])} | **Repaired:** {len(health.get('repaired') or [])}",
+        f"**Last backup:** {backup.get('last_backup_time') or 'never'} ({backup.get('last_backup_status')})",
+        f"**Last restore:** {backup.get('last_restore_time') or 'never'}",
+        f"**REST state:** {rest.get('state')} (remaining {rest.get('remaining_s', 0)}s)",
+    ]
+    await ctx.send("\n".join(lines))
+
+
 @client.command(name='spotify')
 async def spotify(ctx: Context, user: discord.Member = None):
     """Shows what a user is listening to on Spotify."""
@@ -874,12 +952,41 @@ def _install_signal_handlers(loop) -> None:
 # --- Main Bot Execution ---
 exit_code = 0
 
+async def _db_maintenance_loop() -> None:
+    """Hourly: remove expired temp/quarantine files (retention 48h)."""
+    while not _shutdown_started:
+        await asyncio.sleep(3600)
+        try:
+            await dbhealth.cleanup_temp_files(max_age_hours=48.0)
+        except Exception as e:
+            log_warning(f"DB maintenance cycle failed: {e!r}")
+
+
 async def main():
     global exit_code
     _install_signal_handlers(asyncio.get_running_loop())
     # ONE health checker for the whole process (never started from on_ready,
     # so reconnects/reloads cannot create duplicate timers).
     keepalive.start()
+
+    # --- Startup sequence: config -> databases -> restore -> Discord ---
+    # Database validation + migrations run BEFORE login so a corrupt or
+    # half-migrated DB never comes up under a live bot. A Discord outage
+    # must not block any of this (and never blocks the API server, which
+    # is already listening).
+    try:
+        health = await dbhealth.validate_all(
+            restore_callback=lambda name: db_backup.restore_single_file(TOKEN, name)
+        )
+        log_info(f"[DATABASE] Startup validation: {health.get('status')} "
+                 f"({health.get('databases')} databases)")
+        migrations = await dbhealth.apply_migrations()
+        if migrations:
+            log_info(f"[DATABASE] Applied migrations: {', '.join(migrations)}")
+        # Periodic temp-file maintenance (expired .tmp/.corrupt copies).
+        asyncio.create_task(_db_maintenance_loop(), name="support:db_maintenance")
+    except Exception as e:
+        log_warning(f"Database validation skipped: {e!r}")
 
     # Auto-restore databases from Discord backup if on a fresh Render container
     try:
@@ -898,6 +1005,11 @@ async def main():
             using_ipv6 = False
             _set_startup(phase="connecting", attempt=0, last_error=None, next_retry_in=None)
             while True:
+                # Single-login-attempt slot: never two concurrent client.start
+                # calls (guards against accidental loop duplication).
+                if not cloudbreaker.begin_login():
+                    await asyncio.sleep(1)
+                    continue
                 try:
                     # discord.py owns the gateway: it reconnects and resumes sessions
                     # on its own, this call only returns after a clean close().
@@ -964,6 +1076,8 @@ async def main():
                     log_warning(f"Unexpected error while starting: {describe_http_failure(e)}")
                     if "<html" not in str(e).lower() and "<!doctype" not in str(e).lower():
                         traceback.print_exc()
+                finally:
+                    cloudbreaker.end_login()
 
                 # --- Recoverable failure: bounded exponential backoff (1→30s) ---
                 if client.is_closed():
@@ -1018,6 +1132,8 @@ async def main():
                     # would make the connection to the proxy itself fail.
                     if DISCORD_PROXY:
                         pass
+                    elif _ipv6_unavailable:
+                        pass  # already probed once this process: no IPv6 route
                     elif not using_ipv6:
                         try:
                             if not await _discord_blocked_over(socket.AF_INET6):
@@ -1027,7 +1143,9 @@ async def main():
                                 log_info("[netcheck] IPv6 route is clean - "
                                          "forcing Discord traffic over IPv6")
                         except Exception:
-                            pass
+                            # Render Singapore has no IPv6 DNS — cache the
+                            # negative result so we stop probing entirely.
+                            globals()["_ipv6_unavailable"] = True
                     else:
                         # This attempt already ran over IPv6 and was still
                         # blocked: fall back to the default family next round.
@@ -1100,6 +1218,13 @@ async def main():
                             + (f" | {' '.join(f'{k}={v}' for k, v in headers_hint.items())}"
                                if headers_hint else ""),
                         )
+                    # Adaptive recovery scheduling from the breaker: while an
+                    # edge ban is active, probe at its cadence (conservative
+                    # 300s for long bans, tightening near expiry) instead of
+                    # the fixed poll interval. Short route limits keep the
+                    # normal ladder above.
+                    if cloudbreaker.is_banned():
+                        wait_time = cloudbreaker.suggested_wait()
                     non_rate_failures = 0
                 else:
                     using_ipv6 = False
