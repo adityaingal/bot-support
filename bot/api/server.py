@@ -29,6 +29,7 @@ from api.routes import bot, guilds, admin
 from api.dependencies import verify_api_key, limiter
 from api.db_manager import db_manager
 from utils.keepalive import snapshot as keepalive_snapshot
+from utils import cloudbreaker
 
 # Configure logging
 logger = logging.getLogger("api_request_logs")
@@ -49,6 +50,9 @@ _PROBE_HEADERS = {"User-Agent": "DiscordBot (https://discord.com, 2.0) Python/3.
 
 async def _probe_discord(family: int) -> dict:
     """GET /users/@me over one address family; 429/HTML = edge-blocked."""
+    # Raw aiohttp call — bypasses cloudbreaker's HTTPClient patch. One
+    # on-demand probe during a ban is fine (login probe is exempt), but
+    # report the ban so other callers stay suppressed.
     out = {}
     connector = aiohttp.TCPConnector(family=family, limit=1)
     timeout = aiohttp.ClientTimeout(total=10)
@@ -61,6 +65,13 @@ async def _probe_discord(family: int) -> dict:
                 if resp.status == 429:
                     out["retry_after_s"] = resp.headers.get("Retry-After")
                     out["cf_ray"] = resp.headers.get("CF-RAY")
+                    try:
+                        retry_after = float(resp.headers.get("Retry-After") or 0.0)
+                    except (TypeError, ValueError):
+                        retry_after = 0.0
+                    # Long Retry-After = Cloudflare edge ban; keep REST suppressed.
+                    if retry_after >= 600.0:
+                        cloudbreaker.report_ban(retry_after)
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
     return out

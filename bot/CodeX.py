@@ -377,10 +377,10 @@ async def update_stats():
             server_channel = client.get_channel(SERVER_COUNT_CHANNEL_ID)
             user_channel = client.get_channel(USER_COUNT_CHANNEL_ID)
             
-            if server_channel:
+            if server_channel and server_channel.name != f"Servers: {servers}":
                 await server_channel.edit(name=f"Servers: {servers}")
             
-            if user_channel:
+            if user_channel and user_channel.name != f"Users: {users}":
                 await user_channel.edit(name=f"Users: {users}")
                 
         except Exception as e:
@@ -484,6 +484,11 @@ async def on_guild_join(guild: discord.Guild):
 @client.event
 async def on_command_completion(context: commands.Context) -> None:
     if context.author.id in OWNER_IDS:
+        return
+
+    # Raw aiohttp webhook — bypasses cloudbreaker's HTTPClient patch, so
+    # guard it manually. Posting during an edge ban renews the block.
+    if cloudbreaker.is_banned():
         return
 
     full_command_name = context.command.qualified_name
@@ -1034,6 +1039,19 @@ async def main():
                         retry_after = float(headers_hint.get("Retry-After") or 0.0)
                     except (TypeError, ValueError):
                         retry_after = 0.0
+
+                    # The patched HTTPClient already trips the breaker for
+                    # long-Retry-After/HTML 429s, but login runs through a
+                    # raw aiohttp path in some discord.py versions. Report
+                    # explicitly so REST is suppressed during the ban no
+                    # matter which path raised.
+                    if retry_after > 0:
+                        try:
+                            cloudbreaker.report_ban(
+                                min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP))
+                        except Exception:
+                            pass
+
                     ban_left = 0.0
                     try:
                         ban_left = cloudbreaker.seconds_left()

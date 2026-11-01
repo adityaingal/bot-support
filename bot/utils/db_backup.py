@@ -36,6 +36,21 @@ from typing import Optional, Tuple, Dict, Any
 import aiohttp
 import discord
 
+try:
+    from utils import cloudbreaker
+except Exception:  # pragma: no cover - fall back to a no-op shim
+    class _NoopBreaker:
+        def is_banned(self) -> bool:
+            return False
+
+        def report_ban(self, *args, **kwargs) -> None:
+            pass
+
+    cloudbreaker = _NoopBreaker()
+
+# Treat a 429 this long as a Cloudflare edge ban (same threshold as cloudbreaker).
+EDGE_BAN_MIN_RETRY_AFTER = 600.0
+
 # Base directory of the bot (where CodeX.py resides)
 BOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -80,6 +95,23 @@ def _err(msg: str) -> None:
         print(f"ERROR - [DB-Backup] {msg}", flush=True)
     except Exception:
         pass
+
+
+def _maybe_report_edge_ban(resp) -> None:
+    """If a raw webhook/message call hit a Cloudflare edge ban, trip the breaker."""
+    if resp.status != 429:
+        return
+    try:
+        retry_after = float(resp.headers.get("Retry-After") or 0.0)
+    except (TypeError, ValueError):
+        retry_after = 0.0
+    if retry_after >= EDGE_BAN_MIN_RETRY_AFTER:
+        _warn(f"Cloudflare edge ban detected (Retry-After {retry_after:.0f}s) — "
+              f"suppressing Discord REST until it lifts")
+        try:
+            cloudbreaker.report_ban(retry_after)
+        except Exception:
+            pass
 
 
 def get_webhook_url() -> str:
@@ -206,6 +238,13 @@ async def backup_now(reason: str = "periodic", force: bool = False) -> Dict[str,
     if not is_valid_webhook_url(webhook_url):
         return {"success": False, "reason": "No valid DB_BACKUP_WEBHOOK_URL configured"}
 
+    # Raw aiohttp call — bypasses cloudbreaker's HTTPClient patch. Posting
+    # to a webhooks URL during an edge ban renews the block, so skip.
+    if cloudbreaker.is_banned():
+        _warn("Cloudflare ban active — skipping backup upload this cycle")
+        _state["last_backup_status"] = "skipped (cloudflare ban)"
+        return {"success": False, "reason": "Cloudflare ban active"}
+
     try:
         # Compressing ~38 databases takes seconds of CPU — running it inline
         # froze the entire event loop (gateway + every command reply) each
@@ -280,6 +319,7 @@ async def backup_now(reason: str = "periodic", force: bool = False) -> Dict[str,
                         "hash": zip_hash[:16],
                     }
                 elif resp.status == 429:
+                    _maybe_report_edge_ban(resp)
                     _warn("Webhook rate limited (429) — skipping backup upload this cycle")
                     _state["last_backup_status"] = "rate_limited"
                     return {"success": False, "reason": "rate limited (429)"}
@@ -303,6 +343,11 @@ async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str,
     if not is_valid_webhook_url(webhook_url):
         return {"success": False, "reason": "No valid DB_BACKUP_WEBHOOK_URL configured"}
 
+    # Raw REST channel fetch — bypasses cloudbreaker's HTTPClient patch.
+    if cloudbreaker.is_banned():
+        _warn("Cloudflare ban active — skipping Discord restore this cycle")
+        return {"success": False, "reason": "Cloudflare ban active"}
+
     timeout = aiohttp.ClientTimeout(total=45)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         channel_id = await _resolve_channel_id(session, webhook_url)
@@ -320,6 +365,11 @@ async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str,
         messages_url = f"https://discord.com/api/v10/channels/{channel_id}/messages?limit=20"
         try:
             async with session.get(messages_url, headers=headers) as resp:
+                if resp.status == 429:
+                    _maybe_report_edge_ban(resp)
+                    text = await resp.text()
+                    _err(f"Failed to fetch channel messages (HTTP 429): {text[:200]}")
+                    return {"success": False, "reason": "HTTP 429 fetching messages"}
                 if resp.status != 200:
                     text = await resp.text()
                     _err(f"Failed to fetch channel messages (HTTP {resp.status}): {text[:200]}")
