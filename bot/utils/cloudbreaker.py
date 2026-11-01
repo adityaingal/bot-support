@@ -8,6 +8,7 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 
 import time
+import asyncio
 
 _banned_until = 0.0
 _last_log = 0.0
@@ -18,6 +19,9 @@ BAN_COOLDOWN = 300.0
 # 1958s, 55333s). Normal Discord route rate limits stay under a few minutes,
 # so only treat a 429 as an edge ban when Retry-After is at least this long.
 EDGE_BAN_MIN_RETRY_AFTER = 600.0
+
+_probe_task: "asyncio.Task | None" = None
+_probe_token: str = ""
 
 
 class CloudflareBanError(RuntimeError):
@@ -53,6 +57,44 @@ def report_ok() -> None:
     if _banned_until > 0:
         _banned_until = 0.0
         print("[cloudbreaker] Discord responding again — resuming REST calls", flush=True)
+
+
+def start_probe(token: str) -> None:
+    """Start the mid-session recovery probe (call once, from on_ready).
+
+    While the breaker is tripped mid-session, no normal REST call can
+    succeed — so nothing would ever call report_ok() and commands would
+    stay dead for the full ban duration. This loop probes the exempt
+    users/@me route every 30s and clears the state the moment Discord
+    answers, bounding the outage to ~30-60s instead of tens of minutes.
+    """
+    global _probe_task, _probe_token
+    _probe_token = token
+    if _probe_task is not None and not _probe_task.done():
+        return
+    _probe_task = asyncio.create_task(_probe_loop(), name="cloudbreaker:probe")
+    print("[cloudbreaker] Mid-session recovery probe started (30s interval)", flush=True)
+
+
+async def _probe_loop() -> None:
+    import aiohttp
+    while True:
+        await asyncio.sleep(30)
+        if not is_banned() or not _probe_token:
+            continue
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    "https://discord.com/api/v10/users/@me",
+                    headers={"Authorization": f"Bot {_probe_token}"},
+                ) as resp:
+                    if resp.status == 200:
+                        report_ok()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
 
 def _retry_after_seconds(exc) -> float:

@@ -454,6 +454,13 @@ async def on_ready():
     log_info(f"Connected to {len(client.users)} users")
     _set_startup(phase="ready", last_error=None, next_retry_in=None, attempt=0)
 
+    # If a mid-session 429 trips the breaker, only the exempt users/@me probe
+    # can clear it — start it now so dead-command windows stay ~30-60s.
+    try:
+        cloudbreaker.start_probe(TOKEN)
+    except Exception as e:
+        log_warning(f"cloudbreaker probe start failed: {e!r}")
+
     # Started exactly once per process — on_ready can fire again on reconnect.
     #
     # Emoji sync runs as its own task: it makes several Discord API round
