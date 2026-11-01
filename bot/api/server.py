@@ -11,6 +11,7 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 
 from fastapi import FastAPI, Depends, Request, Response
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
@@ -104,6 +105,145 @@ async def _netcheck() -> dict:
           f"discord/IPv6={data['discord_ipv6'].get('status', data['discord_ipv6'].get('error'))}",
           flush=True)
     return data
+
+
+# --- Live status dashboard (/dashboard) ------------------------------------
+# Self-contained HTML page (no external assets) that polls /api/status every
+# 5s, shows a live clock, a ticking countdown to the next login probe, and
+# the fetch latency. Works even while the bot is Cloudflare-banned.
+DASHBOARD_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Support — Live Status</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         background: #0b0f14; color: #d7e0ea; min-height: 100vh; padding: 24px; }
+  h1 { font-size: 18px; letter-spacing: .08em; margin-bottom: 4px; }
+  .sub { color: #7c8ea0; font-size: 12px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          gap: 12px; max-width: 960px; }
+  .card { background: #121a22; border: 1px solid #1e2a36; border-radius: 10px;
+          padding: 14px 16px; }
+  .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .12em;
+             color: #7c8ea0; margin-bottom: 8px; font-weight: 600; }
+  .big { font-size: 22px; font-weight: 700; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px;
+           font-size: 12px; font-weight: 700; }
+  .ok { background: #0f3d24; color: #4ade80; }
+  .warn { background: #3d320f; color: #fbbf24; }
+  .bad { background: #3d1418; color: #f87171; }
+  .muted { color: #7c8ea0; }
+  .err { font-size: 12px; word-break: break-all; color: #f87171; margin-top: 6px; }
+  .clock { font-size: 28px; font-weight: 700; }
+  #next { font-size: 28px; font-weight: 700; }
+  .foot { margin-top: 20px; font-size: 11px; color: #5c6f80; max-width: 960px; }
+  button { background: #1e2a36; color: #d7e0ea; border: 1px solid #2b3b4c;
+           border-radius: 8px; padding: 6px 12px; cursor: pointer;
+           font: inherit; font-size: 12px; }
+  button:hover { background: #2b3b4c; }
+</style>
+</head>
+<body>
+  <h1>SUPPORT — LIVE STATUS</h1>
+  <div class="sub">auto-refreshes every 5s · public · no login required</div>
+  <div class="grid">
+    <div class="card">
+      <h2>Live Time</h2>
+      <div class="clock" id="clock">--:--:--</div>
+      <div class="muted" id="date" style="font-size:12px"></div>
+    </div>
+    <div class="card">
+      <h2>Web Service</h2>
+      <div class="big"><span class="badge" id="web">...</span></div>
+      <div class="muted" style="margin-top:8px">status fetch: <span id="lat">-</span> ms</div>
+    </div>
+    <div class="card">
+      <h2>Discord</h2>
+      <div class="big"><span class="badge" id="dc">...</span></div>
+      <div class="muted" id="phase" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>Next Login Probe</h2>
+      <div id="next" class="muted">-</div>
+      <div class="muted" id="attempt" style="font-size:12px"></div>
+    </div>
+    <div class="card">
+      <h2>Guilds / Users</h2>
+      <div class="big"><span id="guilds">-</span> / <span id="users">-</span></div>
+    </div>
+    <div class="card">
+      <h2>Last Error</h2>
+      <div class="err" id="err">none</div>
+    </div>
+  </div>
+  <div class="foot">
+    <button onclick="tick()">Refresh now</button>
+    <span id="upd" class="muted" style="margin-left:10px"></span>
+  </div>
+<script>
+let nextAt = null;
+function pad(n) { return String(n).padStart(2, '0'); }
+function clockTick() {
+  const d = new Date();
+  document.getElementById('clock').textContent =
+    pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  document.getElementById('date').textContent = d.toDateString();
+  if (nextAt != null) {
+    const left = Math.max(0, Math.round(nextAt - Date.now() / 1000));
+    const el = document.getElementById('next');
+    if (left > 0) {
+      el.textContent = pad(Math.floor(left / 60)) + ':' + pad(left % 60);
+      el.className = 'muted';
+    } else {
+      el.textContent = 'probing...';
+      el.className = 'big';
+    }
+  }
+}
+async function tick() {
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/status', { cache: 'no-store' });
+    const ms = Math.round(performance.now() - t0);
+    const d = await r.json();
+    document.getElementById('lat').textContent = ms;
+    const web = document.getElementById('web');
+    web.textContent = 'ONLINE'; web.className = 'badge ok';
+    const dc = document.getElementById('dc');
+    const st = (d.discord && d.discord.status) || 'offline';
+    if (st === 'online') { dc.textContent = 'ONLINE'; dc.className = 'badge ok'; }
+    else if (st === 'starting') { dc.textContent = 'STARTING'; dc.className = 'badge warn'; }
+    else { dc.textContent = 'OFFLINE'; dc.className = 'badge bad'; }
+    const ph = (d.discord && d.discord.phase) || '';
+    document.getElementById('phase').textContent = ph ? ('phase: ' + ph) : '';
+    const nr = d.discord && d.discord.next_retry_in_s;
+    if (nr != null && st !== 'online') {
+      nextAt = Date.now() / 1000 + nr;
+    } else {
+      nextAt = null;
+      document.getElementById('next').textContent = st === 'online' ? 'connected' : '-';
+    }
+    const at = d.discord && d.discord.attempt;
+    document.getElementById('attempt').textContent = at != null ? ('attempt ' + at) : '';
+    document.getElementById('guilds').textContent = (d.guilds != null) ? d.guilds : '-';
+    document.getElementById('users').textContent = (d.users != null) ? d.users : '-';
+    const le = (d.discord && d.discord.last_error) || '';
+    document.getElementById('err').textContent = le || 'none';
+    document.getElementById('upd').textContent =
+      'status updated ' + ((d.discord && d.discord.updated) || '?') + ' · fetched in ' + ms + ' ms';
+  } catch (e) {
+    document.getElementById('err').textContent = 'status fetch failed: ' + e;
+  }
+}
+clockTick(); setInterval(clockTick, 1000);
+tick(); setInterval(tick, 5000);
+</script>
+</body>
+</html>
+"""
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -243,6 +383,14 @@ def create_app() -> FastAPI:
     @app.head("/api/status", summary="Service status (HEAD)", include_in_schema=False)
     async def api_status_head():
         return Response(status_code=200)
+
+    @app.get("/dashboard", summary="Live Status Dashboard",
+             description="Lightweight live status page: clock, Discord state, "
+                         "ticking countdown to the next login probe, latency. "
+                         "Polls /api/status every 5 seconds.",
+             response_class=HTMLResponse)
+    async def dashboard():
+        return HTMLResponse(DASHBOARD_HTML)
 
     @app.get("/health", summary="Health Check", description="Performs a health check for container orchestration and uptime monitoring.")
     async def health():
