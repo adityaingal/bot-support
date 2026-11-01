@@ -173,6 +173,24 @@ class DbHealthTests(unittest.TestCase):
         self.assertTrue(os.path.exists(path))
         self.assertEqual(dbhealth.RESETTABLE_FILES, frozenset())
 
+    # 12. Database integrity during REST reconnect cycles: repeated
+    # validations while the edge ban is active never touch healthy DBs.
+    def test_integrity_survives_reconnect_cycles(self):
+        from utils import cloudbreaker
+        path = os.path.join(dbhealth.DB_DIR, "stable.db")
+        _make_db(path)
+        cloudbreaker._reset_for_tests()
+        try:
+            cloudbreaker.report_ban(3076)
+            for _ in range(3):
+                health = asyncio.run(dbhealth.validate_all())
+                self.assertEqual(health["status"], "healthy")
+                self.assertTrue(os.path.exists(path))
+            ok, _ = dbhealth.quick_check_file(path)
+            self.assertTrue(ok)
+        finally:
+            cloudbreaker._reset_for_tests()
+
 
 if __name__ == "__main__":
     unittest.main()

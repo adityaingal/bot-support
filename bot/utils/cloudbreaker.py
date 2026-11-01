@@ -1,23 +1,32 @@
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║   Discord REST circuit breaker & recovery controller             ║
 # ║                                                                  ║
-# ║   States:                                                        ║
-# ║     NORMAL         — REST working, breaker idle                  ║
-# ║     SUSPECTED_LIMIT— short route/global 429 seen (no suppression)║
-# ║     EDGE_BLOCKED   — Cloudflare edge ban; REST suppressed        ║
-# ║     PROBING        — a recovery probe is in flight               ║
-# ║     RECOVERING     — probe succeeded, verifying normal traffic   ║
-# ║     WARMING_UP     — resuming optional REST gradually            ║
+# ║   Lifecycle / REST states:                                       ║
+# ║     STARTING      — process booting, before first login attempt  ║
+# ║     CONNECTING    — client.start() in flight                     ║
+# ║     CONNECTED     — gateway up, REST healthy                     ║
+# ║     RATE_LIMITED  — short route/global 429 (no REST suppression) ║
+# ║     EDGE_BLOCKED  — Cloudflare edge ban; REST suppressed         ║
+# ║     RECOVERING    — probe succeeded, verifying normal traffic    ║
+# ║     DEGRADED      — running with a known problem (e.g. DB)       ║
+# ║     FAILED        — fatal login error (bad token/intents)        ║
 # ║                                                                  ║
-# ║   Only the login probe (GET /users/@me) and the background       ║
-# ║   recovery probe are allowed while EDGE_BLOCKED, so the ban can  ║
-# ║   expire naturally instead of being renewed by outbound traffic. ║
+# ║   Cooldown rules:                                                ║
+# ║     • Retry-After is read from BOTH the header AND the JSON      ║
+# ║       body; the longest valid value wins.                        ║
+# ║     • Deadlines use the monotonic clock (immune to wall jumps).  ║
+# ║     • While EDGE_BLOCKED there are NO identity probes: the       ║
+# ║       login loop / probe loop sleep until the cooldown expires,  ║
+# ║       then make ONE controlled recovery attempt. Mid-ban polls  ║
+# ║       renew the Cloudflare block (production bug this replaces). ║
+# ║     • A second 429 updates the cooldown (extend-only).           ║
+# ║   Only the login probe (GET /users/@me) is allowed while         ║
+# ║   EDGE_BLOCKED, so the ban can expire naturally.                 ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 import os
 import json
 import time
-import random
 import asyncio
 
 # --- Tunables (env-overridable) -------------------------------------------
@@ -31,35 +40,38 @@ def _env_float(name: str, default: float) -> float:
 
 
 BAN_COOLDOWN = 300.0
-# A Discord route rate-limit returns Retry-After in seconds/minutes. A
-# Cloudflare EDGE block returns minutes/hours (observed 1958s, 55333s).
-# Only treat a 429 at/above this wait without X-RateLimit headers as an
-# edge ban worth full REST suppression.
+# A Discord route rate-limit returns Retry-After in seconds. A Cloudflare
+# EDGE block returns minutes/hours (observed 1958s, 55333s). Only treat a
+# 429 at/above this wait without X-RateLimit headers as an edge ban
+# worth full REST suppression.
 EDGE_BAN_MIN_RETRY_AFTER = _env_float("DISCORD_EDGE_BAN_MIN_RETRY_AFTER", 600.0)
-# Adaptive probe cadence while EDGE_BLOCKED:
-#   remaining > LONG_BAN_PROBE_AFTER : probe every LONG_BAN_PROBE_INTERVAL
-#   remaining <= that                 : probe every PROBE_INTERVAL
-#   remaining < NEAR_EXPIRY          : probe every NEAR_EXPIRY_INTERVAL
-LONG_BAN_PROBE_AFTER = _env_float("DISCORD_LONG_BAN_PROBE_AFTER", 900.0)
-LONG_BAN_PROBE_INTERVAL = _env_float("DISCORD_LONG_BAN_PROBE_INTERVAL", 300.0)
-PROBE_INTERVAL = _env_float("DISCORD_PROBE_INTERVAL", 120.0)
-NEAR_EXPIRY = _env_float("DISCORD_PROBE_NEAR_EXPIRY", 120.0)
-NEAR_EXPIRY_INTERVAL = _env_float("DISCORD_PROBE_NEAR_EXPIRY_INTERVAL", 30.0)
-# How long RECOVERING -> WARMING_UP -> NORMAL takes after a successful probe.
+# Hard ceiling for honouring a 429's Retry-After (~48h; observed max 55333s).
+RETRY_AFTER_CAP = 172800.0
+# How long RECOVERING -> CONNECTED takes after a successful probe.
 WARMUP_HOLD = _env_float("DISCORD_WARMUP_HOLD", 45.0)
 # Recovery probes are disabled entirely when false (manual mode).
 RECOVERY_ENABLED = (os.getenv("REST_RECOVERY_ENABLED", "true").strip().lower() == "true")
+# Minimum gap between recovery probes even after failures (anti-storm).
+PROBE_MIN_GAP = _env_float("DISCORD_PROBE_MIN_GAP", 120.0)
 
 # --- Module state ----------------------------------------------------------
 
-STATE_NORMAL = "NORMAL"
-STATE_SUSPECTED_LIMIT = "SUSPECTED_LIMIT"
+STATE_STARTING = "STARTING"
+STATE_CONNECTING = "CONNECTING"
+STATE_CONNECTED = "CONNECTED"
+STATE_RATE_LIMITED = "RATE_LIMITED"
 STATE_EDGE_BLOCKED = "EDGE_BLOCKED"
-STATE_PROBING = "PROBING"
 STATE_RECOVERING = "RECOVERING"
-STATE_WARMING_UP = "WARMING_UP"
+STATE_DEGRADED = "DEGRADED"
+STATE_FAILED = "FAILED"
 
-_state = STATE_NORMAL
+# Back-compat aliases (older logs, tests, dashboard caches).
+STATE_NORMAL = STATE_CONNECTED
+STATE_SUSPECTED_LIMIT = STATE_RATE_LIMITED
+STATE_PROBING = STATE_EDGE_BLOCKED      # probing is EDGE_BLOCKED + _probing flag
+STATE_WARMING_UP = STATE_RECOVERING
+
+_state = STATE_STARTING
 # Cooldown deadlines use the monotonic clock (immune to wall-clock jumps);
 # wall timestamps are kept only for persistence/diagnostics.
 _blocked_until_mono = 0.0
@@ -70,12 +82,14 @@ _classification = None
 _retry_after = 0.0
 _last_ok_wall = 0.0
 _recovered_at_mono = 0.0
+_last_detail = ""
 
 _probe_lock: asyncio.Lock | None = None
 _probe_task: asyncio.Task | None = None
 _probe_token = ""
 _probing = False
 _warm_task: asyncio.Task | None = None
+_next_probe_mono = 0.0
 
 _last_log = 0.0
 _LOG_GAP = 300
@@ -84,10 +98,9 @@ _STATE_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".rest_state.json"
 )
 
-# Readable state names for logs / dashboard
 STATES = (
-    STATE_NORMAL, STATE_SUSPECTED_LIMIT, STATE_EDGE_BLOCKED,
-    STATE_PROBING, STATE_RECOVERING, STATE_WARMING_UP,
+    STATE_STARTING, STATE_CONNECTING, STATE_CONNECTED, STATE_RATE_LIMITED,
+    STATE_EDGE_BLOCKED, STATE_RECOVERING, STATE_DEGRADED, STATE_FAILED,
 )
 
 
@@ -102,13 +115,21 @@ def state() -> str:
 
 
 def is_banned() -> bool:
-    return _state in (STATE_EDGE_BLOCKED, STATE_PROBING) and time.monotonic() < _blocked_until_mono
+    return _state == STATE_EDGE_BLOCKED and time.monotonic() < _blocked_until_mono
 
 
 def seconds_left() -> float:
-    if _state not in (STATE_EDGE_BLOCKED, STATE_PROBING):
+    if _state != STATE_EDGE_BLOCKED:
         return 0.0
     return max(0.0, _blocked_until_mono - time.monotonic())
+
+
+def next_attempt_utc() -> str | None:
+    """Wall-clock UTC time of the next permitted login/recovery attempt."""
+    remaining = seconds_left()
+    if remaining <= 0:
+        return None
+    return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(time.time() + remaining))
 
 
 def snapshot() -> dict:
@@ -119,37 +140,33 @@ def snapshot() -> dict:
         "banned": remaining > 0,
         "retry_after_s": round(_retry_after, 1) if _retry_after else None,
         "remaining_s": round(remaining, 1),
-        "next_probe_in_s": round(suggested_wait(), 1) if remaining > 0 else None,
+        "cooldown_remaining_s": round(remaining, 1),
+        "next_attempt_utc": next_attempt_utc(),
         "http_status": _last_status,
         "cf_ray": _last_cf_ray,
         "classification": _classification,
         "last_ok": _last_ok_wall or None,
+        "probing": _probing,
+        "login_in_flight": _login_locked,
+        "detail": _last_detail or None,
     }
 
 
 # --- Adaptive scheduling ---------------------------------------------------
 
 def suggested_wait() -> float:
-    """Adaptive delay until the next login/recovery probe while blocked.
+    """Delay until the next login/recovery attempt while an edge ban is active.
 
-    Long bans: conservative 300s probes. As the expected expiry nears,
-    tighten to the configured probe interval, then to the near-expiry
-    interval. Bounded jitter (±10%) is added but never pushes the wait
-    below the remaining server-mandated cooldown floor of a few seconds.
+    Honours the FULL server-mandated cooldown: we sleep until (almost) the
+    expiry, then make ONE controlled attempt. Polling login mid-ban renews
+    the Cloudflare block — this is the production bug the old 60s/300s
+    polling cadence caused.
     """
     remaining = seconds_left()
     if remaining <= 0:
         return 0.0
-    if remaining > LONG_BAN_PROBE_AFTER:
-        base = LONG_BAN_PROBE_INTERVAL
-    elif remaining > NEAR_EXPIRY:
-        base = PROBE_INTERVAL
-    else:
-        base = min(NEAR_EXPIRY_INTERVAL, max(remaining, 5.0))
-    jittered = base * random.uniform(0.9, 1.1)
-    # Never sleep past the end of the ban window by a large margin, and
-    # never below 5s (avoid tight loops).
-    return max(5.0, min(jittered, max(remaining, 5.0)))
+    # Wake ~1s before expiry so the request lands right at the boundary.
+    return max(1.0, remaining - 1.0)
 
 
 # --- Transitions (centralized) --------------------------------------------
@@ -157,7 +174,6 @@ def suggested_wait() -> float:
 def _log(msg: str) -> None:
     global _last_log
     now = time.time()
-    # Transitions always log; steady-state re-trips are rate-limited.
     print(f"[REST] {msg}", flush=True)
     _last_log = now
 
@@ -168,13 +184,48 @@ def _transition(new_state: str, *, force: bool = False) -> None:
         _state = new_state
 
 
+def report_starting() -> None:
+    _transition(STATE_STARTING)
+
+
+def report_connecting() -> None:
+    _transition(STATE_CONNECTING)
+
+
+def report_connected() -> None:
+    """Gateway ready. Never overrides an active edge ban (REST health is
+    tracked separately)."""
+    if is_banned():
+        return
+    if _state != STATE_CONNECTED:
+        _transition(STATE_CONNECTED)
+
+
+def report_failed(detail: str = "") -> None:
+    global _last_detail
+    _last_detail = detail[:200]
+    _transition(STATE_FAILED)
+    _log(f"State: FAILED{_last_detail and f' — {_last_detail}' or ''}")
+
+
+def report_degraded(detail: str = "") -> None:
+    """Running with a known problem (e.g. database degraded mode). Never
+    overrides an active edge ban or a FAILED verdict."""
+    global _last_detail
+    if is_banned() or _state == STATE_FAILED:
+        return
+    _last_detail = detail[:200]
+    _transition(STATE_DEGRADED)
+    _log(f"State: DEGRADED{_last_detail and f' — {_last_detail}' or ''}")
+
+
 def report_ban(duration: float = BAN_COOLDOWN, *, status: int | None = 429,
                cf_ray: str | None = None, classification: str = "edge") -> None:
-    """Trip (or extend) the edge-blocked state. Wall-clock duration only
-    sets a monotonic deadline; safe against clock jumps."""
+    """Trip (or extend — only forward) the edge-blocked state. Wall-clock
+    duration only sets a monotonic deadline; safe against clock jumps."""
     global _blocked_until_mono, _detected_at_wall, _last_status
     global _last_cf_ray, _classification, _retry_after, _last_log
-    duration = max(5.0, float(duration or BAN_COOLDOWN))
+    duration = min(max(5.0, float(duration or BAN_COOLDOWN)), RETRY_AFTER_CAP)
     now_mono = time.monotonic()
     now_wall = time.time()
     if duration > (_blocked_until_mono - now_mono):
@@ -185,11 +236,13 @@ def report_ban(duration: float = BAN_COOLDOWN, *, status: int | None = 429,
         _last_cf_ray = cf_ray
     _classification = classification
     _retry_after = duration
+    remaining_now = max(0.0, _blocked_until_mono - now_mono)
     if now_wall - _last_log >= _LOG_GAP or _state != STATE_EDGE_BLOCKED:
         _last_log = now_wall
         print(
             f"[REST] State: EDGE_BLOCKED ({classification}) — suppressing Discord "
-            f"REST for {duration:.0f}s"
+            f"REST for {remaining_now:.0f}s; next permitted attempt "
+            f"{time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime(now_wall + remaining_now))}"
             + (f" | CF-RAY={cf_ray}" if cf_ray else ""),
             flush=True,
         )
@@ -202,7 +255,7 @@ def report_ok() -> None:
     again — clear immediately and begin the staged recovery."""
     global _blocked_until_mono, _last_ok_wall, _recovered_at_mono
     global _last_log
-    if _state in (STATE_EDGE_BLOCKED, STATE_PROBING) or _blocked_until_mono > time.monotonic():
+    if _state == STATE_EDGE_BLOCKED or _blocked_until_mono > time.monotonic():
         _blocked_until_mono = 0.0
         _last_ok_wall = time.time()
         _recovered_at_mono = time.monotonic()
@@ -221,45 +274,48 @@ def report_suspected_limit(status: int, retry_after: float, cf_ray: str | None =
         _last_cf_ray = cf_ray
     _classification = "route_limit"
     _retry_after = retry_after
-    if _state == STATE_NORMAL:
-        _transition(STATE_SUSPECTED_LIMIT)
+    if _state in (STATE_CONNECTED, STATE_STARTING, STATE_CONNECTING):
+        _transition(STATE_RATE_LIMITED)
 
 
 def _schedule_warmup() -> None:
-    """RECOVERING -> WARMING_UP -> NORMAL after a short hold. Fire-and-forget;
-    falls back to NORMAL immediately when no loop is running (tests)."""
+    """RECOVERING -> CONNECTED after a short hold. Fire-and-forget;
+    falls back to CONNECTED immediately when no loop is running (tests)."""
     global _warm_task
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        _transition(STATE_NORMAL)
+        _transition(STATE_CONNECTED)
         return
     if _warm_task is not None and not _warm_task.done():
         return
 
     async def _warm():
         try:
-            await asyncio.sleep(WARMUP_HOLD / 2)
-            _transition(STATE_WARMING_UP)
-            print("[REST] State: WARMING_UP", flush=True)
-            _persist()
-            await asyncio.sleep(WARMUP_HOLD / 2)
+            await asyncio.sleep(WARMUP_HOLD)
         except asyncio.CancelledError:
             pass
         finally:
-            if _state in (STATE_RECOVERING, STATE_WARMING_UP):
-                _transition(STATE_NORMAL)
-                print("[REST] State: NORMAL", flush=True)
+            if _state in (STATE_RECOVERING,):
+                _transition(STATE_CONNECTED)
+                print("[REST] State: CONNECTED", flush=True)
                 _persist()
 
     _warm_task = loop.create_task(_warm(), name="cloudbreaker:warmup")
 
 
-# --- Classification of a 429 ----------------------------------------------
+# --- Retry-After parsing (header + JSON body) ------------------------------
 
-def _retry_after_seconds(exc) -> float:
+def _header_retry_after(exc) -> float:
     headers = getattr(getattr(exc, "response", None), "headers", None) or {}
-    raw = headers.get("Retry-After")
+    return _ra_from_headers(headers)
+
+
+def _ra_from_headers(headers) -> float:
+    try:
+        raw = headers.get("Retry-After")
+    except Exception:
+        return 0.0
     if not raw:
         return 0.0
     try:
@@ -275,9 +331,35 @@ def _retry_after_seconds(exc) -> float:
         return 0.0
 
 
+def _json_retry_after(exc) -> float:
+    """Discord 429 JSON bodies carry {"retry_after": N} — parse it too."""
+    body = getattr(exc, "text", "") or ""
+    if not body or body.lstrip()[:1] == "<":  # empty or HTML — nothing to parse
+        return 0.0
+    try:
+        data = json.loads(body)
+    except Exception:
+        return 0.0
+    if not isinstance(data, dict):
+        return 0.0
+    try:
+        return max(0.0, float(data.get("retry_after") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def parse_retry_after(exc) -> float:
+    """Longest applicable cooldown from BOTH the Retry-After header and the
+    JSON body. Malformed values yield 0 (never raise)."""
+    return max(_header_retry_after(exc), _json_retry_after(exc))
+
+
 def _cf_ray(exc) -> str | None:
     headers = getattr(getattr(exc, "response", None), "headers", None) or {}
-    return headers.get("CF-RAY")
+    try:
+        return headers.get("CF-RAY")
+    except Exception:
+        return None
 
 
 def _has_rate_limit_headers(exc) -> bool:
@@ -293,7 +375,7 @@ def _maybe_report_edge_ban(exc) -> None:
     headers = edge ban (suppress). Anything else = normal route limit."""
     if getattr(exc, "status", None) != 429:
         return
-    wait = _retry_after_seconds(exc)
+    wait = parse_retry_after(exc)
     ray = _cf_ray(exc)
     body = str(getattr(exc, "text", "") or "")
     lowered = body.lower()
@@ -362,8 +444,8 @@ def _load_persisted() -> None:
         _classification = data.get("classification") or "restored"
         _transition(STATE_EDGE_BLOCKED)
         print(
-            f"[REST] Restored persisted ban state — {remaining:.0f}s remaining "
-            f"({(_classification or '?')})",
+            f"[REST] Restored persisted ban state — {remaining:.0f}s remaining, "
+            f"next permitted attempt {next_attempt_utc()} ({_classification})",
             flush=True,
         )
     except Exception:
@@ -384,10 +466,9 @@ def start_probe(token: str) -> None:
     """Start the background recovery probe (call once, from on_ready).
 
     While EDGE_BLOCKED mid-session, no normal REST call can succeed, so
-    nothing would call report_ok(). This loop probes the exempt
-    users/@me route at the adaptive cadence and clears state the moment
-    Discord answers, bounding outages to the probe interval instead of
-    the full ban duration.
+    nothing would call report_ok(). This loop sleeps out the FULL cooldown,
+    then makes ONE controlled users/@me probe: 200 clears state, 429
+    updates the cooldown safely. No mid-ban probes — they renew the block.
     """
     global _probe_task, _probe_token
     _probe_token = token or ""
@@ -400,26 +481,29 @@ def start_probe(token: str) -> None:
     except RuntimeError:
         return
     _probe_task = loop.create_task(_probe_loop(), name="cloudbreaker:probe")
-    print("[REST] Recovery probe started (adaptive interval)", flush=True)
+    print("[REST] Recovery probe started (sleeps out full cooldowns)", flush=True)
 
 
 async def _probe_loop() -> None:
     import aiohttp
-    global _probing
+    global _probing, _next_probe_mono
     while True:
-        await asyncio.sleep(10)
-        if not is_banned() or not _probe_token:
+        await asyncio.sleep(5)
+        if not _probe_token or not RECOVERY_ENABLED:
             continue
-        wait = suggested_wait()
-        await asyncio.sleep(wait)
-        if not is_banned():
+        if is_banned():
+            # NO probes during an active cooldown: sleep until it expires.
+            await asyncio.sleep(max(1.0, seconds_left()))
             continue
+        now = time.monotonic()
+        if now < _next_probe_mono:
+            continue
+        # Cooldown expired (or none): ONE controlled recovery probe.
         lock = _get_probe_lock()
         if lock.locked():
             continue  # one outstanding probe at a time
         async with lock:
             _probing = True
-            _transition(STATE_PROBING)
             try:
                 timeout = aiohttp.ClientTimeout(total=10)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -429,13 +513,29 @@ async def _probe_loop() -> None:
                     ) as resp:
                         if resp.status == 200:
                             report_ok()
+                        elif resp.status == 429:
+                            # Another 429: update the cooldown safely and
+                            # wait it out — no further probes until expiry.
+                            try:
+                                wait = _ra_from_headers(resp.headers)
+                                if wait <= 0:
+                                    data = json.loads(await resp.text())
+                                    if isinstance(data, dict):
+                                        wait = max(0.0, float(data.get("retry_after") or 0.0))
+                            except Exception:
+                                wait = 0.0
+                            report_ban(wait if wait > 0 else BAN_COOLDOWN,
+                                       status=429,
+                                       cf_ray=resp.headers.get("CF-RAY"),
+                                       classification="edge_429")
                         else:
-                            _transition(STATE_EDGE_BLOCKED)
+                            # Transient failure (5xx etc.): back off before
+                            # the next attempt instead of storming.
+                            _next_probe_mono = time.monotonic() + PROBE_MIN_GAP
             except asyncio.CancelledError:
                 raise
             except Exception:
-                if _state == STATE_PROBING:
-                    _transition(STATE_EDGE_BLOCKED)
+                _next_probe_mono = time.monotonic() + PROBE_MIN_GAP
             finally:
                 _probing = False
 
@@ -512,8 +612,9 @@ def _reset_for_tests() -> None:
     global _state, _blocked_until_mono, _detected_at_wall, _last_status
     global _last_cf_ray, _classification, _retry_after, _last_ok_wall
     global _recovered_at_mono, _probing, _login_locked, _probe_token
-    global _probe_task, _warm_task, _probe_lock, _last_log
-    _state = STATE_NORMAL
+    global _probe_task, _warm_task, _probe_lock, _last_log, _last_detail
+    global _next_probe_mono
+    _state = STATE_CONNECTED
     _blocked_until_mono = 0.0
     _detected_at_wall = 0.0
     _last_status = None
@@ -529,3 +630,5 @@ def _reset_for_tests() -> None:
     _warm_task = None
     _probe_lock = None
     _last_log = 0.0
+    _last_detail = ""
+    _next_probe_mono = 0.0

@@ -454,7 +454,13 @@ def _extract_validated(archive: bytes, only_file: str | None = None) -> Dict[str
     atomically move validated files into place. On ANY validation failure
     the originals are left untouched.
 
-    Returns {restored: int, reason?: str}. Runs on a worker thread.
+    Newer-guard: a healthy local file that is NEWER than the backup
+    member's timestamp is never overwritten with the older archive copy
+    (only applies to full restores; single-file recovery targets a
+    quarantined/missing path so it always restores).
+
+    Returns {restored: int, skipped_newer: int, reason?: str}.
+    Runs on a worker thread.
     """
     staging = os.path.join(BOT_DIR, ".restore_tmp")
     if os.path.isdir(staging):
@@ -464,9 +470,11 @@ def _extract_validated(archive: bytes, only_file: str | None = None) -> Dict[str
         with zipfile.ZipFile(io.BytesIO(archive)) as zf:
             corrupt_member = zf.testzip()
             if corrupt_member is not None:
-                return {"restored": 0, "reason": f"zip CRC failure on {corrupt_member}"}
+                return {"restored": 0, "skipped_newer": 0,
+                        "reason": f"zip CRC failure on {corrupt_member}"}
 
             extracted: list[tuple[str, str]] = []  # (staged_path, target_path)
+            skipped_newer = 0
             for member in zf.infolist():
                 if member.is_dir():
                     continue
@@ -475,34 +483,56 @@ def _extract_validated(archive: bytes, only_file: str | None = None) -> Dict[str
                     continue
                 if only_file is not None and os.path.basename(target) != only_file:
                     continue
+                # Never overwrite a newer local database with an older
+                # backup member: a meaningful (>1 KB), healthy local file
+                # whose mtime beats the archive entry always wins.
+                if only_file is None and os.path.exists(target):
+                    try:
+                        member_ts = time.mktime(tuple(member.date_time) + (0, 0, -1))
+                        local_mtime = os.path.getmtime(target)
+                        local_size = os.path.getsize(target)
+                    except (OSError, OverflowError, ValueError):
+                        member_ts, local_mtime, local_size = 0.0, 0.0, 0
+                    if local_size > 1024 and local_mtime > member_ts + 60.0:
+                        if not target.endswith(".db"):
+                            skipped_newer += 1
+                            continue
+                        ok, _ = dbhealth.quick_check_file(target) if dbhealth else (True, "ok")
+                        if ok:
+                            skipped_newer += 1
+                            continue
                 staged = os.path.join(staging, os.path.basename(target))
                 with zf.open(member) as src, open(staged, "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 extracted.append((staged, target))
 
             if not extracted:
-                return {"restored": 0, "reason": "no matching files in archive"}
+                if skipped_newer:
+                    return {"restored": 0, "skipped_newer": skipped_newer,
+                            "reason": "all local files are newer than the backup"}
+                return {"restored": 0, "skipped_newer": 0,
+                        "reason": "no matching files in archive"}
 
             # Validate staged SQLite files BEFORE touching the originals.
             for staged, target in extracted:
                 if target.endswith(".db"):
                     ok, detail = dbhealth.quick_check_file(staged) if dbhealth else (True, "ok")
                     if not ok:
-                        return {"restored": 0,
+                        return {"restored": 0, "skipped_newer": skipped_newer,
                                 "reason": f"staged {os.path.basename(target)} failed integrity: {detail}"}
                 elif target.endswith(".json"):
                     try:
                         with open(staged, "r", encoding="utf-8") as f:
                             json.load(f)
                     except Exception as e:
-                        return {"restored": 0,
+                        return {"restored": 0, "skipped_newer": skipped_newer,
                                 "reason": f"staged {os.path.basename(target)} invalid JSON: {e}"}
 
             # Atomic per-file move into place.
             for staged, target in extracted:
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 os.replace(staged, target)
-            return {"restored": len(extracted)}
+            return {"restored": len(extracted), "skipped_newer": skipped_newer}
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -533,6 +563,9 @@ async def restore_from_discord(bot_token: str, force: bool = False) -> Dict[str,
             if result["restored"] == 0:
                 _err(f"Restore aborted, originals untouched: {result.get('reason')}")
                 return {"success": False, "reason": result.get("reason")}
+            if result.get("skipped_newer"):
+                _emit(f"Skipped {result['skipped_newer']} file(s): local copy is newer "
+                      f"than the backup (never overwrite newer data).")
             _state["last_restore_time"] = datetime.utcnow().isoformat()
             _state["last_restore_files"] = result["restored"]
             with open(MARKER_FILE, "w", encoding="utf-8") as f:

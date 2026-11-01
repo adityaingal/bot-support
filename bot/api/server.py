@@ -167,7 +167,7 @@ DASHBOARD_HTML = """<!doctype html>
       <div class="muted" style="margin-top:8px">status fetch: <span id="lat">-</span> ms</div>
     </div>
     <div class="card">
-      <h2>Discord</h2>
+      <h2>Discord Gateway</h2>
       <div class="big"><span class="badge" id="dc">...</span></div>
       <div class="muted" id="phase" style="margin-top:8px"></div>
     </div>
@@ -240,7 +240,9 @@ async function tick() {
     else { dc.textContent = 'OFFLINE'; dc.className = 'badge bad'; }
     const ph = (d.discord && d.discord.phase) || '';
     document.getElementById('phase').textContent = ph ? ('phase: ' + ph) : '';
-    const nr = d.discord && d.discord.next_retry_in_s;
+    const restNow = d.rest || {};
+    const nr = (restNow.cooldown_remaining_s > 0) ? restNow.cooldown_remaining_s
+              : ((d.discord && d.discord.next_retry_in_s) || null);
     if (nr != null && st !== 'online') {
       nextAt = Date.now() / 1000 + nr;
     } else {
@@ -253,17 +255,27 @@ async function tick() {
     document.getElementById('users').textContent = (d.users != null) ? d.users : '-';
     const le = (d.discord && d.discord.last_error) || '';
     document.getElementById('err').textContent = le || 'none';
-    // REST state machine
+    // REST state machine (full lifecycle: STARTING/CONNECTING/CONNECTED/
+    // RATE_LIMITED/EDGE_BLOCKED/RECOVERING/DEGRADED/FAILED)
     const rest = d.rest || {};
     const restEl = document.getElementById('rest');
     const rs = rest.state || 'unknown';
     restEl.textContent = rs;
-    restEl.className = 'badge ' + (rs === 'NORMAL' ? 'ok' : (rs === 'SUSPECTED_LIMIT' ? 'warn' : (rs === 'unknown' ? 'warn' : 'bad')));
+    let restCls = 'bad';
+    if (rs === 'CONNECTED') restCls = 'ok';
+    else if (rs === 'RECOVERING') restCls = 'warn';
+    else if (rs === 'RATE_LIMITED' || rs === 'STARTING' || rs === 'CONNECTING'
+             || rs === 'DEGRADED' || rs === 'unknown') restCls = 'warn';
+    restEl.className = 'badge ' + restCls;
     let rd = [];
     if (rest.cf_ray) rd.push('CF-RAY ' + rest.cf_ray);
     if (rest.classification) rd.push(rest.classification);
-    if (rest.remaining_s > 0) rd.push(Math.round(rest.remaining_s) + 's left');
-    if (rest.last_ok) rd.push('last ok ' + rest.last_ok);
+    if (rest.cooldown_remaining_s > 0) rd.push('cooldown ' + Math.round(rest.cooldown_remaining_s) + 's left');
+    if (rest.next_attempt_utc) rd.push('next attempt ' + rest.next_attempt_utc);
+    if (rest.last_ok) {
+      const age = Math.max(0, Math.round(Date.now() / 1000 - rest.last_ok));
+      rd.push('last success ' + (age < 90 ? age + 's' : Math.round(age / 60) + 'm') + ' ago');
+    }
     document.getElementById('restdetail').textContent = rd.join(' · ') || 'idle';
     // Database
     const db = d.database || {};

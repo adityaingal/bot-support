@@ -55,3 +55,6 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Runtime REST recovery state (ban deadlines — never commit)
+bot/.rest_state.json

@@ -274,22 +274,18 @@ LOG_CHANNEL_ID = 1396794297386532978 # Replace with the channel ID for join/leav
 # limit). Fatal errors (bad token, missing intents, failed cog load) exit
 # immediately so the problem stays visible instead of being retried forever.
 MAX_START_ATTEMPTS = 7
-# A 429/Cloudflare block during login is handled with in-process POLLING
-# instead of one long sleep: wake at most every RATE_LIMIT_POLL_MAX seconds
-# and retry, so we connect the moment the edge answers again — Retry-After
-# has been observed to overstate the real block, and in-process retries do
-# NOT extend it (three boots at 10:04/10:10/10:14 UTC all reported the same
-# absolute expiry of 01:26 UTC). We never exit the process: a Render restart
-# resets the ladder back to 120s, and exits/restart loops are what historically
-# kept renewing blocks. Beyond the last wait the process stays up in phase
-# "blocked" and keeps polling at the same interval forever.
+# A 429/Cloudflare block during login honours the FULL server cooldown:
+# we sleep until Retry-After expires (monotonic clock), then make ONE
+# controlled recovery attempt. Mid-ban polling renews the Cloudflare
+# block (the production bug: logs showed "cooldown 60s" while the server
+# said Retry-After=3076). We never exit the process: a Render restart
+# resets everything and restart loops are what historically kept renewing
+# blocks.
 MAX_RATE_LIMIT_WAITS = 30
 RATE_LIMIT_BASE_WAIT = 120.0
 RATE_LIMIT_MAX_WAIT = 1800.0
-# Hard ceiling on any rate-limit sleep: while blocked we poll at this
-# interval instead of trusting Retry-After blindly. 60s = max ~1 minute
-# of extra downtime after the edge ban lifts (one tiny users/@me probe
-# per minute; in-process probes observed not to renew bans).
+# Legacy poll-interval constant: no longer used to clamp 429 waits
+# (full-cooldown sleep replaced polling). Kept for compatibility.
 RATE_LIMIT_POLL_MAX = 60.0
 # Ceiling for honouring a 429's Retry-After. Observed blocks on Render's
 # shared egress IPs: 7.2h, 15.4h (Retry-After=55333) and ~23h
@@ -511,9 +507,14 @@ async def on_ready():
     log_info(f"Connected to {len(client.guilds)} guilds")
     log_info(f"Connected to {len(client.users)} users")
     _set_startup(phase="ready", last_error=None, next_retry_in=None, attempt=0)
+    try:
+        cloudbreaker.report_connected()
+    except Exception:
+        pass
 
     # If a mid-session 429 trips the breaker, only the exempt users/@me probe
-    # can clear it — start it now so dead-command windows stay ~30-60s.
+    # can clear it — start it now. The probe sleeps out the FULL cooldown
+    # (no mid-ban polls) and makes one controlled attempt at expiry.
     try:
         cloudbreaker.start_probe(TOKEN)
     except Exception as e:
@@ -965,6 +966,10 @@ async def _db_maintenance_loop() -> None:
 async def main():
     global exit_code
     _install_signal_handlers(asyncio.get_running_loop())
+    try:
+        cloudbreaker.report_starting()
+    except Exception:
+        pass
     # ONE health checker for the whole process (never started from on_ready,
     # so reconnects/reloads cannot create duplicate timers).
     keepalive.start()
@@ -980,6 +985,11 @@ async def main():
         )
         log_info(f"[DATABASE] Startup validation: {health.get('status')} "
                  f"({health.get('databases')} databases)")
+        if health.get("status") == "degraded":
+            try:
+                cloudbreaker.report_degraded("database validation degraded")
+            except Exception:
+                pass
         migrations = await dbhealth.apply_migrations()
         if migrations:
             log_info(f"[DATABASE] Applied migrations: {', '.join(migrations)}")
@@ -1013,6 +1023,10 @@ async def main():
                 try:
                     # discord.py owns the gateway: it reconnects and resumes sessions
                     # on its own, this call only returns after a clean close().
+                    try:
+                        cloudbreaker.report_connecting()
+                    except Exception:
+                        pass
                     await client.start(TOKEN)
                     if _shutdown_started:
                         log_info("Discord client closed.")
@@ -1026,6 +1040,10 @@ async def main():
                     # never pretend to be healthy.
                     log_error(f"Support failed to start. Reason: {e}")
                     _set_startup(phase="failed", last_error=str(e), next_retry_in=None)
+                    try:
+                        cloudbreaker.report_failed(f"cog load failed: {e}")
+                    except Exception:
+                        pass
                     exit_code = 1
                     return
 
@@ -1035,6 +1053,10 @@ async def main():
                               "privileged intents in the Discord Developer Portal.")
                     log_error("Support failed to start. Reason: invalid Discord credentials or intents.")
                     _set_startup(phase="failed", last_error=repr(e), next_retry_in=None)
+                    try:
+                        cloudbreaker.report_failed(f"login rejected: {type(e).__name__}")
+                    except Exception:
+                        pass
                     exit_code = 1
                     return
 
@@ -1045,6 +1067,10 @@ async def main():
                         log_error("Support failed to start. Reason: Discord rejected the configured token.")
                         _set_startup(phase="failed", last_error="Discord rejected the token (HTTP 401)",
                                      next_retry_in=None)
+                        try:
+                            cloudbreaker.report_failed("token rejected (HTTP 401)")
+                        except Exception:
+                            pass
                         exit_code = 1
                         return
                     if getattr(e, "status", None) == 403:
@@ -1059,6 +1085,10 @@ async def main():
                             log_error("Check the TOKEN environment variable in Render and the "
                                       "privileged intents in the Discord Developer Portal.")
                             log_error("Support failed to start. Reason: Discord rejected the configured token.")
+                            try:
+                                cloudbreaker.report_failed("login forbidden (HTTP 403)")
+                            except Exception:
+                                pass
                             exit_code = 1
                             return
                     else:
@@ -1126,14 +1156,17 @@ async def main():
                     # Probe IPv6 once; when it answers cleanly, force the next
                     # attempt (REST login + gateway) over it.
                     #
+                    # Disabled by default: Render Singapore has no IPv6 DNS
+                    # (every probe fails with a DNS error — pure log noise).
+                    # Set DISCORD_IPV6_NETCHECK=true to re-enable the probe.
                     # Skipped entirely when a proxy is configured: swapping the
                     # local address family does not change the exit IP Discord
                     # sees (so it cannot lift the block), and forcing AF_INET6
                     # would make the connection to the proxy itself fail.
-                    if DISCORD_PROXY:
+                    if DISCORD_PROXY or _ipv6_unavailable:
                         pass
-                    elif _ipv6_unavailable:
-                        pass  # already probed once this process: no IPv6 route
+                    elif os.getenv("DISCORD_IPV6_NETCHECK", "false").strip().lower() != "true":
+                        pass  # noisy IPv6 checks disabled (Render has no IPv6)
                     elif not using_ipv6:
                         try:
                             if not await _discord_blocked_over(socket.AF_INET6):
@@ -1143,33 +1176,33 @@ async def main():
                                 log_info("[netcheck] IPv6 route is clean - "
                                          "forcing Discord traffic over IPv6")
                         except Exception:
-                            # Render Singapore has no IPv6 DNS — cache the
-                            # negative result so we stop probing entirely.
+                            # No route / no DNS for IPv6: cache the negative
+                            # result so we stop probing entirely.
                             globals()["_ipv6_unavailable"] = True
                     else:
                         # This attempt already ran over IPv6 and was still
                         # blocked: fall back to the default family next round.
                         using_ipv6 = False
 
-                    # Keep the process alive (/health stays 200 so Render does
-                    # not restart us) and poll: probe the edge again after a
-                    # short, bounded interval instead of sleeping out the whole
-                    # block — the moment it answers, we are live.
+                    # --- Honest cooldown handling -------------------------------
+                    # Parse Retry-After from BOTH the header and the JSON body;
+                    # the longest valid value wins. Sleep the FULL server
+                    # cooldown (monotonic), then ONE controlled retry. Never
+                    # log/report a clamped poll interval as the cooldown.
                     rate_limit_waits += 1
                     headers_hint = _rate_limit_headers(failure)
+                    try:
+                        retry_after = cloudbreaker.parse_retry_after(failure)
+                    except Exception:
+                        retry_after = 0.0
                     if headers_hint:
                         last_error_text = describe_http_failure(failure) + " | " + " ".join(
                             f"{k}={v}" for k, v in headers_hint.items())
-                    retry_after = 0.0
-                    try:
-                        retry_after = float(headers_hint.get("Retry-After") or 0.0)
-                    except (TypeError, ValueError):
-                        retry_after = 0.0
 
                     # The patched HTTPClient already trips the breaker for
                     # long-Retry-After/HTML 429s, and login goes through the
                     # same HTTPClient, so the breaker is normally already
-                    # tripped by the time we reach here. Only report a long
+                    # tripped by the time we reach here. Report a long
                     # Retry-After (real edge ban) as a fallback; a short one
                     # is a transient route rate limit and must not suppress
                     # all Discord REST.
@@ -1186,45 +1219,36 @@ async def main():
                     except Exception:
                         pass
 
-                    if rate_limit_waits > MAX_RATE_LIMIT_WAITS:
-                        # Exiting would let Render restart the process and reset
-                        # the ladder to 120s. Stay alive and keep polling.
-                        wait_time = max(RATE_LIMIT_MAX_WAIT, min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP), ban_left)
-                        wait_time = min(wait_time, RATE_LIMIT_POLL_MAX)
-                        if retry_after > 0:
-                            wait_time = min(wait_time, max(retry_after, 10.0))
-                        next_phase = "blocked"
-                        log_error(f"Login still rate-limited after {MAX_RATE_LIMIT_WAITS} "
-                                  f"cooldowns - process stays up; next attempt in "
-                                  f"{wait_time:.0f}s. Reason: {last_error_text}")
-                    else:
-                        wait_time = min(
-                            RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_waits - 1)),
-                            RATE_LIMIT_MAX_WAIT,
-                        )
-                        wait_time = max(wait_time, min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP), ban_left)
-                        # Poll instead of trusting Retry-After blindly: clamp
-                        # every sleep so we re-probe the edge at the interval.
-                        # When Retry-After shrinks near the block's end, honour
-                        # it exactly so the final wake-up lands on expiry.
-                        wait_time = min(wait_time, RATE_LIMIT_POLL_MAX)
-                        if retry_after > 0:
-                            wait_time = min(wait_time, max(retry_after, 10.0))
-                        log_discord_once(
-                            f"startup-rate-limit-{rate_limit_waits}",
-                            f"{describe_http_failure(failure)} during login - "
-                            f"cooldown {wait_time:.0f}s "
-                            f"(wait {rate_limit_waits}/{MAX_RATE_LIMIT_WAITS})"
-                            + (f" | {' '.join(f'{k}={v}' for k, v in headers_hint.items())}"
-                               if headers_hint else ""),
-                        )
-                    # Adaptive recovery scheduling from the breaker: while an
-                    # edge ban is active, probe at its cadence (conservative
-                    # 300s for long bans, tightening near expiry) instead of
-                    # the fixed poll interval. Short route limits keep the
-                    # normal ladder above.
+                    server_cooldown = max(retry_after, ban_left)
                     if cloudbreaker.is_banned():
+                        # Honour the FULL server cooldown: sleep until it
+                        # expires, then make one controlled recovery attempt.
+                        # (Mid-ban login polls renew the Cloudflare block.)
                         wait_time = cloudbreaker.suggested_wait()
+                        next_phase = "blocked"
+                    else:
+                        # Short route-level limit: wait the server-specified
+                        # Retry-After (or the exponential ladder when absent).
+                        wait_time = max(
+                            min(RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_waits - 1)),
+                                RATE_LIMIT_MAX_WAIT),
+                            min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP),
+                            5.0,
+                        )
+                        next_phase = "retrying"
+
+                    next_attempt_utc = time.strftime(
+                        "%Y-%m-%d %H:%M:%SZ", time.gmtime(time.time() + wait_time))
+                    cooldown_desc = (f"server cooldown {server_cooldown:.0f}s"
+                                     if server_cooldown > 0 else "no Retry-After")
+                    log_discord_once(
+                        f"login-429-{rate_limit_waits}",
+                        f"429 during login - {cooldown_desc}; next permitted "
+                        f"login attempt {next_attempt_utc} (in {wait_time:.0f}s, "
+                        f"wait {rate_limit_waits}/{MAX_RATE_LIMIT_WAITS})"
+                        + (f" | {' '.join(f'{k}={v}' for k, v in headers_hint.items())}"
+                           if headers_hint else ""),
+                    )
                     non_rate_failures = 0
                 else:
                     using_ipv6 = False
@@ -1247,7 +1271,10 @@ async def main():
                 _set_startup(phase=next_phase, attempt=attempt,
                              last_error=last_error_text,
                              next_retry_in=int(wait_time))
-                if next_phase == "retrying":
+                if next_phase == "retrying" and not is_rate_limited:
+                    # Non-rate-limit failures only. 429s already logged the
+                    # REAL server cooldown and next-attempt time above —
+                    # never report a clamped poll interval as the cooldown.
                     log_warning(f"Temporary connection failure ({describe_http_failure(failure)}) - "
                                 f"retrying in {wait_time:.0f}s (attempt {attempt})")
                 await asyncio.sleep(wait_time)
