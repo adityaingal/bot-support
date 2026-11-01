@@ -15,7 +15,7 @@ import discord
 from discord.ext import commands
 from utils.emoji import DENIED
 from utils.jsonio import load_json, save_json
-from utils.cache import cached_or_fetch, invalidate
+from utils.cache import cached_or_fetch, invalidate, peek
 import aiosqlite
 import asyncio
 
@@ -85,6 +85,9 @@ def updateignore(guild_id, data):
 
 
 async def getConfig(guildID):
+  hit = peek("prefix", guildID)
+  if hit is not None:
+    return hit
   async def _fetch():
     async with aiosqlite.connect('db/prefix.db') as db:
       async with db.execute("SELECT prefix FROM prefixes WHERE guild_id = ?", (guildID,)) as cursor:
@@ -95,7 +98,7 @@ async def getConfig(guildID):
           defaultConfig = {"prefix": ">"}
           await updateConfig(guildID, defaultConfig)
           return defaultConfig
-  return await cached_or_fetch("prefix", _fetch, guildID, ttl=60.0)
+  return await cached_or_fetch("prefix", _fetch, guildID, ttl=300.0)
 
 async def updateConfig(guildID, data):
   async with aiosqlite.connect('db/prefix.db') as db:

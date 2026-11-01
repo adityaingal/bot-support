@@ -23,7 +23,7 @@ from typing import List
 import aiosqlite
 from utils.config import OWNER_IDS, BotName
 from utils.Tools import getConfig, updateConfig
-from utils.cache import cached_or_fetch
+from utils.cache import cached_or_fetch, peek, invalidate
 from .Context import Context
 from colorama import Fore, Style, init
 import importlib
@@ -214,12 +214,16 @@ class zyrox(commands.AutoShardedBot):
             return msg
 
     async def _is_np(self, user_id: int) -> bool:
+        cached_val = peek("np", user_id)
+        if cached_val is not None:
+            return bool(cached_val)
+
         async def _fetch():
             async with aiosqlite.connect('db/np.db') as db:
                 async with db.execute("SELECT id FROM np WHERE id = ?", (user_id,)) as cursor:
                     row = await cursor.fetchone()
                     return row is not None
-        return await cached_or_fetch("np", _fetch, user_id, ttl=60.0)
+        return await cached_or_fetch("np", _fetch, user_id, ttl=120.0)
 
     async def get_prefix(self, message: discord.Message):
         # Fail-safe: if the prefix DB read throws (locked/missing/corrupt),
@@ -228,34 +232,72 @@ class zyrox(commands.AutoShardedBot):
         try:
             if message.guild:
                 guild_id = message.guild.id
-                is_np = await self._is_np(message.author.id)
-                data = await getConfig(guild_id)
-                prefix = data["prefix"]
+                user_id = message.author.id
+                # Sync cache hits: no event-loop tick, no DB, no await.
+                prefix = peek("prefix", guild_id)
+                is_np = peek("np", user_id)
+
+                need_prefix = prefix is None
+                need_np = is_np is None
+                if need_prefix or need_np:
+                    async def _fetch_prefix():
+                        from utils.Tools import getConfig
+                        data = await getConfig(guild_id)
+                        return data["prefix"]
+
+                    async def _fetch_np():
+                        async def _query():
+                            async with aiosqlite.connect('db/np.db') as db:
+                                async with db.execute("SELECT id FROM np WHERE id = ?", (user_id,)) as cursor:
+                                    row = await cursor.fetchone()
+                                    return row is not None
+                        return await cached_or_fetch("np", _query, user_id, ttl=120.0)
+
+                    results = await asyncio.gather(
+                        _fetch_prefix() if need_prefix else asyncio.sleep(0, result=prefix),
+                        _fetch_np() if need_np else asyncio.sleep(0, result=is_np),
+                        return_exceptions=True,
+                    )
+                    prefix = results[0] if not isinstance(results[0], BaseException) else ">"
+                    is_np = results[1] if not isinstance(results[1], BaseException) else False
+
+                is_np = bool(is_np)
                 if is_np:
                     return commands.when_mentioned_or(prefix, '')(self, message)
-                else:
-                    return commands.when_mentioned_or(prefix)(self, message)
+                return commands.when_mentioned_or(prefix)(self, message)
             else:
-                is_np = await self._is_np(message.author.id)
+                is_np = peek("np", message.author.id)
+                if is_np is None:
+                    is_np = await self._is_np(message.author.id)
                 if is_np:
                     return commands.when_mentioned_or('?', '')(self, message)
-                else:
-                    return commands.when_mentioned_or('')(self, message)
+                return commands.when_mentioned_or('')(self, message)
         except Exception:
             if message.guild:
                 return commands.when_mentioned_or('>')(self, message)
             return commands.when_mentioned_or('')(self, message)
 
     async def on_message_edit(self, before, after):
+        if before.content == after.content:
+            return
+        if after.guild is None or after.author.bot:
+            return
+        # Cheap reject: non-command edits must not pay get_context() (which
+        # can hit SQLite) on every message edit in every guild.
+        content = after.content or ""
+        if not content:
+            return
+        prefixes = await self.get_prefix(after)
+        if not any(content.startswith(p) for p in prefixes if p):
+            # Also allow re-invokes for np users (empty-string prefix).
+            if "" not in prefixes:
+                return
         ctx: Context = await self.get_context(after, cls=Context)
-        if before.content != after.content:
-            if after.guild is None or after.author.bot:
-                return
-            if ctx.command is None:
-                return
-            if isinstance(ctx.channel, discord.Thread):
-                return
-            await self.invoke(ctx)
+        if ctx.command is None:
+            return
+        if isinstance(ctx.channel, discord.Thread):
+            return
+        await self.invoke(ctx)
 
 def setup_bot():
     intents = discord.Intents.all()

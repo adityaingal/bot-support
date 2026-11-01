@@ -26,6 +26,20 @@ async def cached(namespace: str, *parts, ttl: float = _DEFAULT_TTL):
     return None
 
 
+def peek(namespace: str, *parts):
+    """Synchronous cache lookup (no await).
+
+    Returns the cached value, or None when the key is absent/expired.
+    Use for hot paths (get_prefix) where a miss is rare and an extra
+    await would add a full event-loop tick before the command runs.
+    """
+    k = _key(namespace, *parts)
+    exp = _expiry.get(k)
+    if exp is not None and time.monotonic() < exp:
+        return _store.get(k)
+    return None
+
+
 def set_cached(namespace: str, value, *parts, ttl: float = _DEFAULT_TTL):
     k = _key(namespace, *parts)
     _store[k] = value

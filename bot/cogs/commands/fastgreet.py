@@ -12,7 +12,7 @@
 
 import discord
 from discord.ext import commands
-import sqlite3
+import aiosqlite
 import asyncio
 import os
 
@@ -22,44 +22,47 @@ class FastGreet(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         os.makedirs("./db", exist_ok=True)
-        self.init_db()
+        self.bot.loop.create_task(self.init_db())
 
-    def init_db(self):
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
+    async def init_db(self):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS greet_channels (
                     guild_id INTEGER,
                     channel_id INTEGER,
                     PRIMARY KEY (guild_id, channel_id)
                 )
             """)
+            await db.commit()
 
     @commands.command(name="fastgreet_add")
     @commands.has_permissions(administrator=True)
     async def add_greet_channel(self, ctx, channel: discord.TextChannel):
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
                 INSERT OR IGNORE INTO greet_channels (guild_id, channel_id)
                 VALUES (?, ?)
             """, (ctx.guild.id, channel.id))
+            await db.commit()
         await ctx.send(f"✅ {channel.mention} added as a greet channel.")
 
     @commands.command(name="fastgreet_remove")
     @commands.has_permissions(administrator=True)
     async def remove_greet_channel(self, ctx, channel: discord.TextChannel):
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("""
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
                 DELETE FROM greet_channels WHERE guild_id = ? AND channel_id = ?
             """, (ctx.guild.id, channel.id))
+            await db.commit()
         await ctx.send(f"❌ {channel.mention} removed from greet channels.")
 
     @commands.command(name="fastgreet_list")
     async def list_greet_channels(self, ctx):
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.execute("""
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("""
                 SELECT channel_id FROM greet_channels WHERE guild_id = ?
             """, (ctx.guild.id,))
-            rows = cursor.fetchall()
+            rows = await cursor.fetchall()
 
         if not rows:
             await ctx.send("⚠️ No greet channels configured.")
@@ -70,11 +73,12 @@ class FastGreet(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.execute("""
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("""
                 SELECT channel_id FROM greet_channels WHERE guild_id = ?
             """, (member.guild.id,))
-            channels = [row[0] for row in cursor.fetchall()]
+            rows = await cursor.fetchall()
+        channels = [row[0] for row in rows]
 
         for channel_id in channels:
             channel = self.bot.get_channel(channel_id)

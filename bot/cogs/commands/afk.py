@@ -152,16 +152,21 @@ class afk(commands.Cog):
                 await db.execute("INSERT OR IGNORE INTO afk_guild (user_id, guild_id) VALUES (?, ?)", (user.id, current_guild.id))
             
             await db.commit()
+        from utils.cache import invalidate as _inv
+        _inv("afk_neg", user.id)
+        for g in self.bot.guilds:
+            _inv("afk_neg", user.id, g.id)
 
     async def clear_afk(self, message):
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute("SELECT 1 FROM afk_guild WHERE user_id = ? AND guild_id = ?", (message.author.id, message.guild.id))
             if not await cursor.fetchone():
-                return 
+                return False
 
             cursor = await db.execute("SELECT type, time, mentions FROM afk WHERE user_id = ?", (message.author.id,))
             afk_data = await cursor.fetchone()
-            if not afk_data: return
+            if not afk_data:
+                return False
 
             afk_type, afk_time, mentions = afk_data
             elapsed_time = await self.time_formatter(time.time() - afk_time)
@@ -177,18 +182,32 @@ class afk(commands.Cog):
             
             await db.commit()
             
+            from utils.cache import invalidate as _inv
+            _inv("afk_neg", message.author.id, message.guild.id)
+
             view = AfkWelcomeBack(message.author, mentions, elapsed_time)
             try:
                 await message.reply(view=view, delete_after=10, mention_author=False)
             except discord.HTTPException:
                 pass
+            return True
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot or not message.guild:
             return
 
-        await self.clear_afk(message)
+        # Only pay a DB round-trip when the author might actually be AFK.
+        # clear_afk already no-ops for non-AFK users, but it still opened a
+        # connection per message. Gate on a short negative cache instead.
+        from utils.cache import peek, set_cached
+        neg = peek("afk_neg", message.author.id, message.guild.id)
+        if neg is not None:
+            return
+
+        cleared = await self.clear_afk(message)
+        if not cleared:
+            set_cached("afk_neg", True, message.author.id, message.guild.id, ttl=30.0)
 
         if not message.mentions:
             return

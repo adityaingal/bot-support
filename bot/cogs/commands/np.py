@@ -106,6 +106,7 @@ class TimeSelect(Select):
                 (self.user.id, expiry_str),
             )
             await db.commit()
+        _cache_invalidate("np", self.user.id)
 
         expiry_text = (
             "**Lifetime**"
@@ -164,6 +165,7 @@ class TimeSelectView(View):
 
 
 from utils.config import BotName
+from utils.cache import invalidate as _cache_invalidate
 
 class NoPrefix(commands.Cog):
     def __init__(self, client):
@@ -229,6 +231,7 @@ class NoPrefix(commands.Cog):
                     await db.commit()
 
                 for user_id in expired_users:
+                    _cache_invalidate("np", user_id)
                     user = self.client.get_user(user_id)
                     if user:
                         log_channel = self.client.get_channel(1396794297386532978)
@@ -379,6 +382,7 @@ class NoPrefix(commands.Cog):
 
             await db.execute("DELETE FROM np WHERE id = ?", (user.id,))
             await db.commit()
+        _cache_invalidate("np", user.id)
 
         guild = ctx.bot.get_guild(1401125905677553716)
         if guild:
@@ -578,6 +582,7 @@ class NoPrefix(commands.Cog):
                 (user.id, expiry_time.isoformat()),
             )
             await db.commit()
+        _cache_invalidate("np", user.id)
 
         embed = CV2Embed(
             title="Congratulations you got 2 months No Prefix!",
@@ -610,6 +615,7 @@ class NoPrefix(commands.Cog):
 
             await db.execute("DELETE FROM np WHERE id = ?", (user.id,))
             await db.commit()
+        _cache_invalidate("np", user.id)
 
         embed = CV2Embed(
             title=f"{ICONS_WARNING} Global No Prefix Expired",
@@ -666,6 +672,7 @@ class NoPrefix(commands.Cog):
                 # Delete all entries
                 await db.execute("DELETE FROM np")
                 await db.commit()
+            _cache_invalidate("np")
 
             # Remove roles from all members in the main guild
             guild = self.client.get_guild(1401125905677553716)
