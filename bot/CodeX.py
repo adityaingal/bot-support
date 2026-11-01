@@ -1195,9 +1195,14 @@ async def main():
                         retry_after = cloudbreaker.parse_retry_after(failure)
                     except Exception:
                         retry_after = 0.0
+                    try:
+                        body_kind = cloudbreaker._body_kind_of(failure)
+                    except Exception:
+                        body_kind = "?"
                     if headers_hint:
                         last_error_text = describe_http_failure(failure) + " | " + " ".join(
                             f"{k}={v}" for k, v in headers_hint.items())
+                    last_error_text += f" | body={body_kind}"
 
                     # The patched HTTPClient already trips the breaker for
                     # long-Retry-After/HTML 429s, and login goes through the
@@ -1229,9 +1234,15 @@ async def main():
                     else:
                         # Short route-level limit: wait the server-specified
                         # Retry-After (or the exponential ladder when absent).
+                        # A login 429 with NO usable Retry-After gets a 300s
+                        # floor: these are edge-related more often than not,
+                        # and tighter polling just renews the block.
+                        ladder = min(RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_waits - 1)),
+                                     RATE_LIMIT_MAX_WAIT)
+                        if retry_after <= 0:
+                            ladder = max(ladder, 300.0)
                         wait_time = max(
-                            min(RATE_LIMIT_BASE_WAIT * (2 ** (rate_limit_waits - 1)),
-                                RATE_LIMIT_MAX_WAIT),
+                            ladder,
                             min(retry_after, RATE_LIMIT_RETRY_AFTER_CAP),
                             5.0,
                         )

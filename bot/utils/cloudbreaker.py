@@ -83,6 +83,7 @@ _retry_after = 0.0
 _last_ok_wall = 0.0
 _recovered_at_mono = 0.0
 _last_detail = ""
+_last_body_kind = None
 
 _probe_lock: asyncio.Lock | None = None
 _probe_task: asyncio.Task | None = None
@@ -149,6 +150,7 @@ def snapshot() -> dict:
         "probing": _probing,
         "login_in_flight": _login_locked,
         "detail": _last_detail or None,
+        "body_kind": _last_body_kind,
     }
 
 
@@ -194,7 +196,8 @@ def report_connecting() -> None:
 
 def report_connected() -> None:
     """Gateway ready. Never overrides an active edge ban (REST health is
-    tracked separately)."""
+    tracked separately). Releases the login slot — the login finished."""
+    end_login()
     if is_banned():
         return
     if _state != STATE_CONNECTED:
@@ -370,23 +373,72 @@ def _has_rate_limit_headers(exc) -> bool:
         return False
 
 
+def _body_kind_of(exc) -> str:
+    """Sanitized classification of a 429's body: 'html', 'json', 'empty'
+    or 'other'. Used to tell Cloudflare edge pages apart from Discord API
+    JSON rate-limit responses. Never logs body content."""
+    body = getattr(exc, "text", "") or ""
+    if not body:
+        return "empty"
+    stripped = body.lstrip()
+    if stripped[:1] == "<":
+        return "html"
+    try:
+        json.loads(body)
+        return "json"
+    except Exception:
+        return "other"
+
+
 def _maybe_report_edge_ban(exc) -> None:
-    """Classify a 429: HTML/1015 or long Retry-After WITHOUT X-RateLimit
-    headers = edge ban (suppress). Anything else = normal route limit."""
+    """Classify a 429 and update breaker state.
+
+    Distinguishes (using headers + body, never assuming every 429 is a
+    Cloudflare ban):
+      • HTML/1015 body           -> cloudflare_1015 edge ban (suppress)
+      • JSON "global": true      -> global_limit (record, no suppression)
+      • X-RateLimit-* headers    -> route_limit (record, no suppression)
+      • long Retry-After w/o RL  -> edge_429 ban (suppress)
+      • CF-RAY, no RL, short RA  -> cf_unclassified (record, no suppression)
+    """
+    global _last_body_kind
     if getattr(exc, "status", None) != 429:
         return
     wait = parse_retry_after(exc)
     ray = _cf_ray(exc)
     body = str(getattr(exc, "text", "") or "")
     lowered = body.lower()
+    _last_body_kind = _body_kind_of(exc)
     looks_html = "1015" in body or "<!doctype" in lowered or "<html" in lowered
     if looks_html:
         report_ban(wait if wait > 0 else BAN_COOLDOWN,
                    status=429, cf_ray=ray, classification="cloudflare_1015")
-    elif wait >= EDGE_BAN_MIN_RETRY_AFTER and not _has_rate_limit_headers(exc):
+        return
+    if _has_rate_limit_headers(exc):
+        report_suspected_limit(429, wait, ray)
+        return
+    # No X-RateLimit headers at all: could be global, shared or edge.
+    if _last_body_kind == "json":
+        try:
+            data = json.loads(body)
+            if isinstance(data, dict) and data.get("global"):
+                report_suspected_limit(429, wait, ray)
+                _set_classification("global_limit")
+                return
+        except Exception:
+            pass
+    if wait >= EDGE_BAN_MIN_RETRY_AFTER:
         report_ban(wait, status=429, cf_ray=ray, classification="edge_429")
     else:
+        # Short/absent Retry-After without rate-limit headers: ambiguous.
+        # Record it (dashboard/logs) but do not suppress REST.
         report_suspected_limit(429, wait, ray)
+        _set_classification("cf_unclassified" if ray else "route_limit")
+
+
+def _set_classification(value: str) -> None:
+    global _classification
+    _classification = value
 
 
 # --- Persistence -----------------------------------------------------------
@@ -613,7 +665,7 @@ def _reset_for_tests() -> None:
     global _last_cf_ray, _classification, _retry_after, _last_ok_wall
     global _recovered_at_mono, _probing, _login_locked, _probe_token
     global _probe_task, _warm_task, _probe_lock, _last_log, _last_detail
-    global _next_probe_mono
+    global _next_probe_mono, _last_body_kind
     _state = STATE_CONNECTED
     _blocked_until_mono = 0.0
     _detected_at_wall = 0.0
@@ -632,3 +684,4 @@ def _reset_for_tests() -> None:
     _last_log = 0.0
     _last_detail = ""
     _next_probe_mono = 0.0
+    _last_body_kind = None

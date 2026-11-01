@@ -48,6 +48,16 @@ class CloudbreakerTests(unittest.TestCase):
         self.assertEqual(cb.state(), cb.STATE_RATE_LIMITED)
         self.assertEqual(cb.seconds_left(), 0.0)
 
+    def test_retry_after_535_route_limit(self):
+        """The exact production case: 535s on login, no suppression."""
+        exc = FakeHTTPException(429, "", {"Retry-After": "535",
+                                          "CF-RAY": "a53a47218b2bd25b-SIN",
+                                          "X-RateLimit-Remaining": "0"})
+        cb._maybe_report_edge_ban(exc)
+        self.assertFalse(cb.is_banned())
+        self.assertEqual(cb.state(), cb.STATE_RATE_LIMITED)
+        self.assertEqual(cb.parse_retry_after(exc), 535.0)
+
     # --- Retry-After: 3076 seconds (edge ban, full cooldown honoured) ---
 
     def test_retry_after_3076_edge_ban_full_cooldown(self):
@@ -124,6 +134,14 @@ class CloudbreakerTests(unittest.TestCase):
         exc = FakeHTTPException(500, "boom")
         cb._maybe_report_edge_ban(exc)
         self.assertFalse(cb.is_banned())
+
+    def test_auth_failure_401_ignored_by_breaker(self):
+        """401 = invalid token: a fatal verdict handled by the login loop,
+        never a rate-limit event."""
+        exc = FakeHTTPException(401, '{"message": "401: Unauthorized", "code": 0}')
+        cb._maybe_report_edge_ban(exc)
+        self.assertFalse(cb.is_banned())
+        self.assertEqual(cb.state(), cb.STATE_CONNECTED)
 
     # --- Successful recovery after cooldown ---
 
@@ -255,6 +273,57 @@ class CloudbreakerTests(unittest.TestCase):
 
     def test_ban_error_type(self):
         self.assertTrue(issubclass(cb.CloudflareBanError, RuntimeError))
+
+    # --- 429 body-kind classification (Cloudflare HTML vs Discord JSON) ---
+
+    def test_body_kind_detection(self):
+        self.assertEqual(cb._body_kind_of(FakeHTTPException(429, "<html>cf</html>")), "html")
+        self.assertEqual(cb._body_kind_of(FakeHTTPException(429, '{"retry_after": 1}')), "json")
+        self.assertEqual(cb._body_kind_of(FakeHTTPException(429, "")), "empty")
+        self.assertEqual(cb._body_kind_of(FakeHTTPException(429, "plain text")), "other")
+
+    def test_global_json_limit_recorded_not_suppressed(self):
+        exc = FakeHTTPException(429, '{"retry_after": 0.5, "global": true, "message": "You are being rate limited."}',
+                                {})
+        cb._maybe_report_edge_ban(exc)
+        self.assertFalse(cb.is_banned())
+        self.assertEqual(cb.state(), cb.STATE_RATE_LIMITED)
+        self.assertEqual(cb.snapshot()["classification"], "global_limit")
+        self.assertEqual(cb.snapshot()["body_kind"], "json")
+
+    def test_cf_unclassified_recorded_not_suppressed(self):
+        """CF-RAY + short Retry-After + no X-RateLimit headers: ambiguous —
+        record for diagnostics, never suppress REST."""
+        exc = FakeHTTPException(429, "", {"Retry-After": "10", "CF-RAY": "xyz-SIN"})
+        cb._maybe_report_edge_ban(exc)
+        self.assertFalse(cb.is_banned())
+        self.assertEqual(cb.snapshot()["classification"], "cf_unclassified")
+        self.assertEqual(cb.snapshot()["body_kind"], "empty")
+
+    def test_login_slot_released_on_connect(self):
+        cb.begin_login()
+        self.assertTrue(cb.snapshot()["login_in_flight"])
+        cb.report_connected()
+        self.assertFalse(cb.snapshot()["login_in_flight"])
+
+    def test_report_connected_does_not_override_ban(self):
+        cb.report_ban(600)
+        cb.report_connected()
+        self.assertTrue(cb.is_banned())
+
+    def test_start_probe_idempotent(self):
+        async def run():
+            cb.start_probe("test-token")
+            first = cb._probe_task
+            cb.start_probe("test-token")  # second call must not duplicate
+            self.assertIs(cb._probe_task, first)
+            if first is not None and not first.done():
+                first.cancel()
+                try:
+                    await first
+                except (asyncio.CancelledError, Exception):
+                    pass
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

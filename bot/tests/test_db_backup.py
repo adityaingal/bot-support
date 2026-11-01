@@ -100,5 +100,40 @@ class DbBackupNewerGuardTests(unittest.TestCase):
             self.assertEqual(f.read(), local)
 
 
+class DbBackupFailureRecoveryTests(unittest.TestCase):
+    """Backup task failures must be graceful (no crash, clear reason) and
+    recoverable — a failed cycle never blocks the next one."""
+
+    def test_backup_now_without_webhook_graceful(self):
+        import asyncio
+        # Hermetic: never touch the real webhook, even if the environment
+        # or a local .env has WEBHOOK_URL configured.
+        old_get = db_backup.get_webhook_url
+        db_backup.get_webhook_url = lambda: ""
+        try:
+            res = asyncio.run(db_backup.backup_now(reason="test"))
+            self.assertFalse(res.get("success"))
+            self.assertIn("reason", res)
+        finally:
+            db_backup.get_webhook_url = old_get
+
+    def test_start_stop_idempotent(self):
+        class _Bot:
+            def is_closed(self):
+                return True
+        old = os.environ.get("DB_BACKUP_ENABLED")
+        os.environ["DB_BACKUP_ENABLED"] = "false"
+        try:
+            db_backup.start(_Bot())  # disabled -> no task, no crash
+            db_backup.start(_Bot())
+            db_backup.stop()
+            db_backup.stop()  # double-stop safe
+        finally:
+            if old is None:
+                os.environ.pop("DB_BACKUP_ENABLED", None)
+            else:
+                os.environ["DB_BACKUP_ENABLED"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

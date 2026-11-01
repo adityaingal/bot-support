@@ -27,6 +27,7 @@ import sys
 import json
 import time
 import sqlite3
+import tempfile
 import zipfile
 import hashlib
 import asyncio
@@ -215,16 +216,26 @@ def _read_db_consistent(abs_path: str) -> bytes:
 
     Copying a live WAL database with a plain read can capture a torn
     mid-write state. sqlite3.Connection.backup() produces a consistent
-    snapshot regardless of concurrent writers.
+    snapshot regardless of concurrent writers. Works on Python 3.11
+    (Render) via a temp file — sqlite3.serialize is 3.14+ only.
     """
     src = sqlite3.connect(f"file:{abs_path}?mode=ro", uri=True, timeout=10)
     try:
-        dst = sqlite3.connect(":memory:")
+        fd, tmp = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
         try:
-            src.backup(dst)
-            return sqlite3.serialize(dst)
+            dst = sqlite3.connect(tmp)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+            with open(tmp, "rb") as f:
+                return f.read()
         finally:
-            dst.close()
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     finally:
         src.close()
 

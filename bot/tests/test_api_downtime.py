@@ -70,6 +70,16 @@ class ApiDuringDiscordDowntime(unittest.TestCase):
         self.assertEqual(data["rest"]["state"], "CONNECTED")
         self.assertFalse(data["rest"]["banned"])
 
+    def test_lavalink_status_reported(self):
+        """Lavalink status must be present and honest (never 'connected'
+        unless a real node is connected in the pool)."""
+        resp = self.client.get("/api/status")
+        self.assertEqual(resp.status_code, 200)
+        lv = resp.json().get("lavalink", {})
+        self.assertIn(lv.get("status"), ("connected", "disconnected", "unavailable", "unknown"))
+        if lv.get("status") == "connected":
+            self.assertGreater(lv.get("connected") or 0, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
