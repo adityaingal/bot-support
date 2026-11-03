@@ -11,6 +11,7 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 
 import os
+import json
 import random
 import discord
 from utils.emoji import FORWARD, ICONLOAD, ICONS_MUSIC, ICONS_PAUSE, ICONS_WARNING_ALT1, MUSICSTOP_ICONS, MUSIC_ALT1, MUTE, REWIND, REWIND_ALT1, SHUFFLE, SKIP, TICK, WARNING, ZMUSICPAUSE, ZPLUS, ZUNMUTE
@@ -518,13 +519,16 @@ class Music(commands.Cog):
 
     @staticmethod
     async def _preflight_ws(uri: str, password: str, user_id: str) -> str | None:
-        """Handshake-probe a node's websocket before Pool.connect.
+        """Probe a node's websocket for a real Lavalink `ready` op.
 
-        wavelink treats non-401/404 handshake errors (e.g. Cloudflare 403)
-        as retryable and loops with backoff, so a blocked node burns the
-        whole per-candidate timeout. Replicating the same handshake with
-        aiohttp fails fast: 401/403/404/network errors -> skip candidate.
-        Returns None when the handshake succeeds (node is viable).
+        A successful handshake is NOT enough: several public proxies accept the
+        websocket and then drop it (1006) or sit idle without ever sending
+        ``{"op": "ready"}``. wavelink only marks a node CONNECTED once that op
+        arrives, so a handshake-only probe accepts dead candidates and
+        `Pool.get_node()` keeps raising InvalidNodeException afterwards.
+
+        401/403/404/network errors and "no ready op" -> skip candidate.
+        Returns None only when the node actually announced itself ready.
         """
         url = f"{uri}/v4/websocket"
         headers = {
@@ -533,13 +537,40 @@ class Music(commands.Cog):
             "Client-Name": f"Wavelink/{wavelink.__version__}",
         }
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
-                async with session.ws_connect(url=url, headers=headers):
-                    return None
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as session:
+                async with session.ws_connect(url=url, headers=headers) as ws:
+                    try:
+                        while True:
+                            msg = await asyncio.wait_for(ws.receive(), timeout=10)
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                try:
+                                    data = json.loads(msg.data)
+                                except (TypeError, ValueError):
+                                    continue
+                                if isinstance(data, dict) and data.get("op") == "ready":
+                                    return None
+                            elif msg.type in (
+                                aiohttp.WSMsgType.CLOSED,
+                                aiohttp.WSMsgType.CLOSING,
+                                aiohttp.WSMsgType.ERROR,
+                            ):
+                                return f"closed before ready (close code {ws.close_code})"
+                    except asyncio.TimeoutError:
+                        return "no ready op within 10s"
         except aiohttp.WSServerHandshakeError as e:
             return f"HTTP {e.status}"
         except Exception as e:
             return f"{type(e).__name__}"
+
+    @staticmethod
+    async def _await_node_ready(node: wavelink.Node, timeout: float = 15.0) -> bool:
+        """True once ``node`` reaches NodeStatus.CONNECTED (received `ready`)."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if node.status is wavelink.NodeStatus.CONNECTED:
+                return True
+            await asyncio.sleep(0.25)
+        return node.status is wavelink.NodeStatus.CONNECTED
 
     async def connect_nodes(self) -> None:
         # wavelink builds its handshake headers from client.user (it asserts),
@@ -599,8 +630,25 @@ class Music(commands.Cog):
                     continue
 
                 if node.identifier in wavelink.Pool.nodes:
-                    print(f"[Music] Lavalink node connected: {uri}", flush=True)
-                    return
+                    # Pool.connect() only waits for the socket to open; the
+                    # node is usable once Lavalink sends `ready`. Some proxies
+                    # open the socket and then never do, which would leave us
+                    # "connected" with Pool.get_node() still raising.
+                    if await self._await_node_ready(node, timeout=15.0):
+                        print(f"[Music] Lavalink node connected: {uri}", flush=True)
+                        return
+                    print(
+                        f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
+                        f"opened but never sent ready ({uri}) - skipping",
+                        flush=True,
+                    )
+                    try:
+                        await node.close(eject=True)
+                    except Exception:
+                        pass
+                    if getattr(self.client, "lavalink_node", None) is node:
+                        self.client.lavalink_node = None
+                    continue
                 print(f"[Music] Lavalink node rejected: {uri}", flush=True)
 
             print(
