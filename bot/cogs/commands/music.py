@@ -523,13 +523,14 @@ class Music(commands.Cog):
 
     # Public Lavalink nodes die often. Candidates are tried in order until one
     # connects; env vars override the primary (LAVALINK_HOST/PASSWORD/...).
-    # Ordered by a live probe: the first two complete the handshake AND send
+    # Ordered by a live probe: the first three complete the handshake AND send
     # `ready`; the last two open a socket but never announce themselves, so
     # they stay only as last-resort fallbacks.
     LAVALINK_CANDIDATES = [
         # (host, password, secure, port)
         ("lavalink-v4.triniumhost.com", "free", True, ""),
         ("lavalink.nazha.online", "nazhafreelava", True, ""),
+        ("lava-v4.millohost.my.id", "https://discord.gg/mjS5J2K3ep", True, ""),
         ("lavalink.jirayu.net", "youshallnotpass", True, ""),
         ("lavalink.serenetia.com", "https://dsc.gg/ajidevserver", True, ""),
     ]
@@ -624,14 +625,15 @@ class Music(commands.Cog):
         # lets non-wavelink errors (timeouts, connector errors) propagate, so a
         # dead alternate could otherwise abort or delay the whole batch.
         while True:
+            # One entry per candidate, so the user-facing "not ready" reply can
+            # name every reason at once instead of only the last one.
+            notes: list[str] = []
             for i, (host, pwd, secure, port) in enumerate(candidates):
                 uri = self._node_uri(host, secure, port)
                 self.node_state = f"checking candidate {i + 1}/{len(candidates)} ({uri})"
                 skip_reason = await self._preflight_ws(uri, pwd, user_id)
                 if skip_reason is not None:
-                    self.node_state = (
-                        f"candidate {i + 1}/{len(candidates)} skipped: {skip_reason}"
-                    )
+                    notes.append(f"{host}: {skip_reason}")
                     print(
                         f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
                         f"skipped ({uri}): preflight {skip_reason}",
@@ -650,10 +652,7 @@ class Music(commands.Cog):
                         timeout=30,
                     )
                 except Exception as e:
-                    self.node_state = (
-                        f"candidate {i + 1}/{len(candidates)} failed: "
-                        f"{type(e).__name__}"
-                    )
+                    notes.append(f"{host}: {type(e).__name__}")
                     print(
                         f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
                         f"failed ({uri}): {type(e).__name__}: {e}",
@@ -671,9 +670,7 @@ class Music(commands.Cog):
                         self.node_state = f"connected to {uri}"
                         print(f"[Music] Lavalink node connected: {uri}", flush=True)
                         return
-                    self.node_state = (
-                        f"candidate {i + 1}/{len(candidates)} opened but never sent ready"
-                    )
+                    notes.append(f"{host}: opened but never sent ready")
                     print(
                         f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
                         f"opened but never sent ready ({uri}) - skipping",
@@ -686,15 +683,16 @@ class Music(commands.Cog):
                     if getattr(self.client, "lavalink_node", None) is node:
                         self.client.lavalink_node = None
                     continue
-                self.node_state = f"candidate {i + 1}/{len(candidates)} rejected"
+                notes.append(f"{host}: rejected by Pool.connect")
                 print(f"[Music] Lavalink node rejected: {uri}", flush=True)
 
+            detail = "; ".join(notes) or "no candidates evaluated"
             self.node_state = (
-                f"all {len(candidates)} Lavalink candidates failed - retrying in 30s"
+                f"all {len(candidates)} failed ({detail}) - retrying in 30s"
             )
             print(
-                f"[Music] All {len(candidates)} Lavalink candidates failed - "
-                "retrying in 30s",
+                f"[Music] All {len(candidates)} Lavalink candidates failed: "
+                f"{detail} - retrying in 30s",
                 flush=True,
             )
             await asyncio.sleep(30)
