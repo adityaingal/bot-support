@@ -178,7 +178,8 @@ class SearchResultView(LayoutView):
                     return
                 if await self.ctx.cog.wait_for_node() is None:
                     await interaction.response.send_message(
-                        "The music node isn't ready yet — try again in a few seconds.", ephemeral=True)
+                        "The music node isn't ready yet — try again in a few seconds. "
+                        f"({self.ctx.cog.node_status_text()})", ephemeral=True)
                     return
                 try:
                     vc = await self.ctx.cog.join_voice(self.ctx.author.voice.channel)
@@ -365,11 +366,26 @@ class MusicControlView(LayoutView):
 class Music(commands.Cog):
     def __init__(self, client: zyrox):
         self.client = client
+        # Human-readable progress of connect_nodes(), surfaced to the user when
+        # a command has to say the node is not ready yet. Set before the task is
+        # scheduled so it is always readable.
+        self.node_state = "connecting to Lavalink"
         self.client.loop.create_task(self.connect_nodes())
         self.client.loop.create_task(self.monitor_inactivity())
         
         self.inactivity_timeout = 120 
         self.player_inactivity = {}  
+
+    def node_status_text(self) -> str:
+        """Short description of why no playable node exists (or which one does)."""
+        nodes = list(wavelink.Pool.nodes.values())
+        connected = [n for n in nodes if n.status is wavelink.NodeStatus.CONNECTED]
+        if connected:
+            return f"connected to {connected[0].uri}"
+        if nodes:
+            states = ", ".join(f"{n.uri}={n.status.name}" for n in nodes)
+            return f"node(s) open but not ready ({states})"
+        return self.node_state
 
     async def monitor_inactivity(self):
         while True:
@@ -389,6 +405,10 @@ class Music(commands.Cog):
                 return wavelink.Pool.get_node()
             except wavelink.InvalidNodeException:
                 await asyncio.sleep(0.5)
+        print(
+            f"[Music] wait_for_node timed out after {timeout}s: {self.node_status_text()}",
+            flush=True,
+        )
         return None
 
     async def clear_stuck_voice(self, guild: discord.Guild) -> None:
@@ -503,12 +523,15 @@ class Music(commands.Cog):
 
     # Public Lavalink nodes die often. Candidates are tried in order until one
     # connects; env vars override the primary (LAVALINK_HOST/PASSWORD/...).
+    # Ordered by a live probe: the first two complete the handshake AND send
+    # `ready`; the last two open a socket but never announce themselves, so
+    # they stay only as last-resort fallbacks.
     LAVALINK_CANDIDATES = [
         # (host, password, secure, port)
-        ("lavalink.jirayu.net", "youshallnotpass", True, ""),
         ("lavalink-v4.triniumhost.com", "free", True, ""),
-        ("lavalink.serenetia.com", "https://dsc.gg/ajidevserver", True, ""),
         ("lavalink.nazha.online", "nazhafreelava", True, ""),
+        ("lavalink.jirayu.net", "youshallnotpass", True, ""),
+        ("lavalink.serenetia.com", "https://dsc.gg/ajidevserver", True, ""),
     ]
 
     @staticmethod
@@ -595,6 +618,7 @@ class Music(commands.Cog):
             candidates = list(self.LAVALINK_CANDIDATES)
 
         user_id = str(self.client.user.id)
+        self.node_state = f"probing {len(candidates)} Lavalink candidate(s)"
 
         # Primary first, in isolation: Pool.connect() iterates sequentially and
         # lets non-wavelink errors (timeouts, connector errors) propagate, so a
@@ -602,8 +626,12 @@ class Music(commands.Cog):
         while True:
             for i, (host, pwd, secure, port) in enumerate(candidates):
                 uri = self._node_uri(host, secure, port)
+                self.node_state = f"checking candidate {i + 1}/{len(candidates)} ({uri})"
                 skip_reason = await self._preflight_ws(uri, pwd, user_id)
                 if skip_reason is not None:
+                    self.node_state = (
+                        f"candidate {i + 1}/{len(candidates)} skipped: {skip_reason}"
+                    )
                     print(
                         f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
                         f"skipped ({uri}): preflight {skip_reason}",
@@ -622,6 +650,10 @@ class Music(commands.Cog):
                         timeout=30,
                     )
                 except Exception as e:
+                    self.node_state = (
+                        f"candidate {i + 1}/{len(candidates)} failed: "
+                        f"{type(e).__name__}"
+                    )
                     print(
                         f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
                         f"failed ({uri}): {type(e).__name__}: {e}",
@@ -634,9 +666,14 @@ class Music(commands.Cog):
                     # node is usable once Lavalink sends `ready`. Some proxies
                     # open the socket and then never do, which would leave us
                     # "connected" with Pool.get_node() still raising.
+                    self.node_state = f"waiting for ready from {uri}"
                     if await self._await_node_ready(node, timeout=15.0):
+                        self.node_state = f"connected to {uri}"
                         print(f"[Music] Lavalink node connected: {uri}", flush=True)
                         return
+                    self.node_state = (
+                        f"candidate {i + 1}/{len(candidates)} opened but never sent ready"
+                    )
                     print(
                         f"[Music] Lavalink candidate {i + 1}/{len(candidates)} "
                         f"opened but never sent ready ({uri}) - skipping",
@@ -649,8 +686,12 @@ class Music(commands.Cog):
                     if getattr(self.client, "lavalink_node", None) is node:
                         self.client.lavalink_node = None
                     continue
+                self.node_state = f"candidate {i + 1}/{len(candidates)} rejected"
                 print(f"[Music] Lavalink node rejected: {uri}", flush=True)
 
+            self.node_state = (
+                f"all {len(candidates)} Lavalink candidates failed - retrying in 30s"
+            )
             print(
                 f"[Music] All {len(candidates)} Lavalink candidates failed - "
                 "retrying in 30s",
@@ -703,7 +744,7 @@ class Music(commands.Cog):
         vc = ctx.voice_client
         if vc is None or not vc.connected:
             if await self.wait_for_node() is None:
-                await ctx.send(view=CV2(f"{WARNING} The music node isn't ready yet — try again in a few seconds."))
+                await ctx.send(view=CV2(f"{WARNING} The music node isn't ready yet — try again in a few seconds. ({self.node_status_text()})"))
                 return
             try:
                 vc = await self.join_voice(ctx.author.voice.channel)
@@ -1190,7 +1231,7 @@ class Music(commands.Cog):
             return
 
         if await self.wait_for_node() is None:
-            await ctx.send(view=CV2(f"{WARNING} The music node isn't ready yet — try again in a few seconds."))
+            await ctx.send(view=CV2(f"{WARNING} The music node isn't ready yet — try again in a few seconds. ({self.node_status_text()})"))
             return
 
         try:
