@@ -45,6 +45,24 @@ class ExtensionLoadError(RuntimeError):
     """
 
 
+def _as_prefix_string(value, default: str = ">") -> str | None:
+    """Coerce a cached prefix entry to a plain string.
+
+    ``utils.cache`` stores whatever ``getConfig`` returns under the
+    ``prefix:<guild>`` key — a ``{"prefix": ">"}`` dict — while ``get_prefix``
+    expects a bare string. Returning ``None`` for anything unusable makes the
+    caller re-fetch instead of passing a dict to ``when_mentioned_or()``.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        inner = value.get("prefix")
+        if isinstance(inner, str):
+            return inner
+    return None
+
+
+
 class zyrox(commands.AutoShardedBot):
     def __init__(self, *arg, **kwargs):
         intents = discord.Intents.all()
@@ -234,7 +252,11 @@ class zyrox(commands.AutoShardedBot):
                 guild_id = message.guild.id
                 user_id = message.author.id
                 # Sync cache hits: no event-loop tick, no DB, no await.
-                prefix = peek("prefix", guild_id)
+                # getConfig() caches {"prefix": ">"} under this same key, so a
+                # warm cache hands back a dict. when_mentioned_or() must receive
+                # a str — a dict reaches get_context() as a non-string prefix
+                # and raises TypeError there, killing EVERY later command.
+                prefix = _as_prefix_string(peek("prefix", guild_id))
                 is_np = peek("np", user_id)
 
                 need_prefix = prefix is None
@@ -258,7 +280,8 @@ class zyrox(commands.AutoShardedBot):
                         _fetch_np() if need_np else asyncio.sleep(0, result=is_np),
                         return_exceptions=True,
                     )
-                    prefix = results[0] if not isinstance(results[0], BaseException) else ">"
+                    raw_prefix = results[0] if not isinstance(results[0], BaseException) else None
+                    prefix = _as_prefix_string(raw_prefix) or ">"
                     is_np = results[1] if not isinstance(results[1], BaseException) else False
 
                 is_np = bool(is_np)

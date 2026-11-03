@@ -11,13 +11,14 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 
 import discord
-from utils.emoji import TICK
+from utils.emoji import TICK, CROSS
 from discord.ext import commands, tasks
 import asyncio
 import datetime
 import re
 from typing import *
 from utils.Tools import *
+from collections import Counter
 from discord.ui import Button, View
 from typing import Union, Optional
 from typing import Union, Optional
@@ -48,7 +49,7 @@ def convert(argument):
 
 async def do_removal(ctx, limit, predicate, *, before=None, after=None):
   if limit > 2000:
-      return await ctx.error(f"Too many messages to search given ({limit}/2000)")
+      return await ctx.send(f"{CROSS} | Too many messages to search given ({limit}/2000)")
 
   if before is None:
       before = ctx.message
@@ -61,9 +62,9 @@ async def do_removal(ctx, limit, predicate, *, before=None, after=None):
   try:
       deleted = await ctx.channel.purge(limit=limit, before=before, after=after, check=predicate)
   except discord.Forbidden as e:
-      return await ctx.error("I do not have permissions to delete messages.")
+      return await ctx.send(f"{CROSS} | I do not have permissions to delete messages.")
   except discord.HTTPException as e:
-      return await ctx.error(f"Error: {e} (try a smaller search?)")
+      return await ctx.send(f"{CROSS} | Error: {e} (try a smaller search?)")
 
   spammers = Counter(m.author.display_name for m in deleted)
   deleted = len(deleted)
@@ -171,7 +172,7 @@ class Message(commands.Cog):
 
         await ctx.message.delete()
         if len(string) < 3:
-            await ctx.error("The substring length must be at least 3 characters.")
+            await ctx.send(f"{CROSS} | The substring length must be at least 3 characters.")
         else:
             await do_removal(ctx, 100, lambda e: string in e.content)
 
@@ -226,7 +227,7 @@ class Message(commands.Cog):
                 total_reactions += sum(r.count for r in message.reactions)
                 await message.clear_reactions()
 
-        await ctx.success(f"{TICK} | Successfully removed {total_reactions} reactions.")
+        await ctx.send(f"{TICK} | Successfully removed {total_reactions} reactions.")
             
 
 

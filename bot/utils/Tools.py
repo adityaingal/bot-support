@@ -119,6 +119,11 @@ def restart_program():
 def blacklist_check():
 
   async def predicate(ctx):
+    # No guild (DM): nothing to blacklist against, and ctx.guild.id would raise
+    # AttributeError which escapes Bot.invoke (it only catches CommandError).
+    if ctx.guild is None:
+      return True
+
     async def _check():
       async with aiosqlite.connect('db/block.db') as db:
         cursor = await db.execute("SELECT 1 FROM user_blacklist WHERE user_id = ?", (str(ctx.author.id),))
@@ -172,6 +177,8 @@ async def get_ignore_data(guild_id: int) -> dict:
 
 def ignore_check():
     async def predicate(ctx):
+        if ctx.guild is None:
+            return True
         data = await get_ignore_data(ctx.guild.id)
         ch = data["channel"]
         iuser = data["user"]

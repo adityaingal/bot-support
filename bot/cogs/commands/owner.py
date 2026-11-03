@@ -658,7 +658,8 @@ class Owner(commands.Cog):
     @commands.is_owner()
     @commands.bot_has_permissions(manage_messages=True)
     async def _purgebot(self, ctx, prefix=None, search=100):
-        
+        from cogs.moderation.message import do_removal
+
         await ctx.message.delete()
         
         def predicate(m):
@@ -674,7 +675,8 @@ class Owner(commands.Cog):
     @commands.is_owner()
     @commands.bot_has_permissions(manage_messages=True)
     async def purguser(self, ctx, member: discord.Member, search=100):
-        
+        from cogs.moderation.message import do_removal
+
         await ctx.message.delete()
         
         await do_removal(ctx, search, lambda e: e.author == member)

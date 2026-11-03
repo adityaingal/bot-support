@@ -34,6 +34,7 @@ from datetime import datetime, timezone, timedelta
 import sqlite3
 from typing import *
 from discord.utils import utcnow
+from collections import Counter
 
 
 
@@ -57,7 +58,7 @@ def convert(argument):
 
 async def do_removal(ctx, limit, predicate, *, before=None, after=None):
     if limit > 2000:
-        return await ctx.error(f"Too many messages to search given ({limit}/2000)")
+        return await ctx.send(f"{CROSS} | Too many messages to search given ({limit}/2000)")
 
     if before is None:
         before = ctx.message
@@ -70,13 +71,13 @@ async def do_removal(ctx, limit, predicate, *, before=None, after=None):
     try:
         deleted = await ctx.channel.purge(limit=limit, before=before, after=after, check=predicate)
     except discord.Forbidden as e:
-        return await ctx.error("I do not have permissions to delete messages.")
+        return await ctx.send(f"{CROSS} | I do not have permissions to delete messages.")
     except discord.HTTPException as e:
-        return await ctx.error(f"Error: {e} (try a smaller search?)")
+        return await ctx.send(f"{CROSS} | Error: {e} (try a smaller search?)")
 
     spammers = Counter(m.author.display_name for m in deleted)
     deleted = len(deleted)
-    messages = [f'{TICK}> | {deleted} message{" was" if deleted == 1 else "s were"} removed.']
+    messages = [f'{TICK} | {deleted} message{" was" if deleted == 1 else "s were"} removed.']
     if deleted:
         messages.append("")
         spammers = sorted(spammers.items(), key=lambda t: t[1], reverse=True)
@@ -85,7 +86,7 @@ async def do_removal(ctx, limit, predicate, *, before=None, after=None):
     to_send = "\n".join(messages)
 
     if len(to_send) > 2000:
-        await ctx.send(f"{TICK}> | Successfully removed {deleted} messages.", delete_after=7)
+        await ctx.send(f"{TICK} | Successfully removed {deleted} messages.", delete_after=7)
     else:
         await ctx.send(to_send, delete_after=7)
 
