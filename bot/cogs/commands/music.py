@@ -411,6 +411,29 @@ class Music(commands.Cog):
         )
         return None
 
+    async def reload_nodes(self) -> None:
+        """Force-close the Lavalink node and schedule a fresh connection attempt.
+
+        connect_nodes() returns after the first successful connect, so it must be
+        re-launched to retry after a mid-run node failure.
+        """
+        self.node_state = "reloading Lavalink node..."
+        pool_nodes = list(wavelink.Pool.nodes.values())
+        await wavelink.Pool.close()
+        lavalink_node = getattr(self.client, "lavalink_node", None)
+        if lavalink_node is not None and lavalink_node not in pool_nodes:
+            pool_nodes.append(lavalink_node)
+        for _node in pool_nodes:
+            _session = getattr(_node, "_session", None)
+            if _session is not None and not _session.closed:
+                try:
+                    await _session.close()
+                except Exception:
+                    pass
+        self.client.lavalink_node = None
+        self.client.loop.create_task(self.connect_nodes())
+        print("[Music] Lavalink node reload scheduled", flush=True)
+
     async def clear_stuck_voice(self, guild: discord.Guild) -> None:
         """Remove a half-open voice client left behind by a failed join.
 
@@ -1322,6 +1345,12 @@ class Music(commands.Cog):
 
             if len(track_histories[guild_id]) > 10:
                 track_histories[guild_id].pop(0)
+
+    @commands.command(name="lavalink_reload", aliases=["lr", "node_reload", "music_reload"], help="Force-reload the Lavalink music node (owner only).")
+    @commands.is_owner()
+    async def _lavalink_reload(self, ctx: Context):
+        await self.reload_nodes()
+        await ctx.reply(f"{TICK} | Lavalink node reload scheduled. Reconnecting... (may take up to 30s)", mention_author=False)
 
     @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: wavelink.TrackEndEventPayload):
