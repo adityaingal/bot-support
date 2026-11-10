@@ -81,14 +81,12 @@ class HelpCommand(commands.HelpCommand):
 
     await ctx.reply(view=embed, mention_author=True)
 
-  async def filter_commands(self, commands, *, sort=False, key=None, show_hidden=False):
+  async def filter_commands(self, commands, *, sort=False, key=None, **kwargs):
     """Suppress Access Denied embeds while the help command probes every command."""
     ctx = self.context
     ctx._help_probe = True
     try:
-        return await super().filter_commands(
-            commands, sort=sort, key=key, show_hidden=show_hidden,
-        )
+        return await super().filter_commands(commands, sort=sort, key=key, **kwargs)
     finally:
         ctx._help_probe = False
 
