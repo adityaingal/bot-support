@@ -120,8 +120,10 @@ class Errors(Cog):
       # Generic CheckFailure (is_owner, custom predicates, blacklist, ...):
       # always answer — a command that fails must never look like the bot
       # simply ignored the message. Skip when access_control already replied
-      # (it sets this flag after sending its own Access Denied embed).
-      if getattr(ctx, "_access_denied_replied", False):
+      # (it sets this flag after sending its own Access Denied embed) or when
+      # HelpCommand.filter_commands is probing every command (help probe sets
+      # ctx._help_probe to avoid spamming Access Denied embeds per command).
+      if getattr(ctx, "_access_denied_replied", False) or getattr(ctx, "_help_probe", False):
         return
       embed = discord.Embed(
         color=0xFF0000,
