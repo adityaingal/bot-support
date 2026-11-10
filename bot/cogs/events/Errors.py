@@ -119,7 +119,10 @@ class Errors(Cog):
 
       # Generic CheckFailure (is_owner, custom predicates, blacklist, ...):
       # always answer — a command that fails must never look like the bot
-      # simply ignored the message.
+      # simply ignored the message. Skip when access_control already replied
+      # (it sets this flag after sending its own Access Denied embed).
+      if getattr(ctx, "_access_denied_replied", False):
+        return
       embed = discord.Embed(
         color=0xFF0000,
         description=f"{ctx.author.mention} You can't use `{ctx.command.qualified_name}` right now.",

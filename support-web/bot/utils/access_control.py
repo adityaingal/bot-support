@@ -63,18 +63,19 @@ def is_bot_dev(user) -> bool:
     return getattr(user, "id", None) in OWNER_IDS
 
 
-# Per-(channel, user, command) throttle for the deny embed. Without it a user
-# spamming a gated command gets one Access Denied reply per message and floods
-# the channel; repeated denials inside the window are silently dropped (the
-# command still never runs).
+# Per-(channel, user) throttle for the deny embed. Without it a user
+# spamming gated commands — or running .help, which probes every command
+# via can_run() — gets one Access Denied reply per message/command and
+# floods the channel; repeated denials inside the window are silently
+# dropped (the command still never runs).
 _DENY_COOLDOWN = 10.0
 _last_denied: dict = {}
 _MAX_DENIED_KEYS = 5000
 
 
-def _deny_throttled(channel_id, user_id, command_name: str) -> bool:
+def _deny_throttled(channel_id, user_id) -> bool:
     import time
-    key = (channel_id, user_id, command_name)
+    key = (channel_id, user_id)
     now = time.monotonic()
     if len(_last_denied) > _MAX_DENIED_KEYS:
         _last_denied.clear()
@@ -83,6 +84,22 @@ def _deny_throttled(channel_id, user_id, command_name: str) -> bool:
         return True
     _last_denied[key] = now
     return False
+
+
+def _is_help_probe(ctx: commands.Context) -> bool:
+    """True when check_command_access is reached from HelpCommand.filter_commands.
+
+    filter_commands() calls cmd.can_run(help_ctx) for every command; can_run
+    temporarily swaps ctx.command but leaves ctx.invoked_with as "help"/"h".
+    A real invocation always has invoked_with matching the command path.
+    Never reply during a probe — it would send one embed per gated command.
+    """
+    help_cmd = ctx.bot.get_command("help") if ctx.bot else None
+    invoked = (ctx.invoked_with or "").lower()
+    if help_cmd is not None:
+        names = {help_cmd.name.lower(), *(a.lower() for a in help_cmd.aliases)}
+        return invoked in names
+    return invoked in {"help", "h"}
 
 
 def _permission_requirements(cmd) -> dict | None:
@@ -100,6 +117,14 @@ def _permission_requirements(cmd) -> dict | None:
 
 
 async def _deny(ctx: commands.Context, description: str) -> None:
+    # Help's filter_commands probes every command via can_run() — never
+    # reply there, or .help floods the channel with one embed per gated command.
+    if _is_help_probe(ctx):
+        return
+    # Throttle: repeated denials from the same user in the same channel
+    # inside the cooldown window are silently dropped.
+    if _deny_throttled(ctx.channel.id if ctx.channel else None, ctx.author.id):
+        return
     embed = discord.Embed(
         title=f"{DENIED} Access Denied",
         description=description,
@@ -140,8 +165,7 @@ async def check_command_access(ctx: commands.Context) -> bool:
         return True
 
     if ctx.guild is None:
-        if not _deny_throttled(None, ctx.author.id, cmd.qualified_name):
-            await _deny(ctx, "**This is a server command** — it can only be used inside a server.")
+        await _deny(ctx, "**This is a server command** — it can only be used inside a server.")
         return False
 
     author = ctx.author
@@ -152,10 +176,9 @@ async def check_command_access(ctx: commands.Context) -> bool:
     if guild_permissions is not None and getattr(guild_permissions, "administrator", False):
         return True
 
-    if not _deny_throttled(ctx.channel.id, author.id, cmd.qualified_name):
-        await _deny(
-            ctx,
-            f"{author.mention} **Administrator or the server owner** is required "
-            f"to use `{ctx.command.qualified_name}`.",
-        )
+    await _deny(
+        ctx,
+        f"{author.mention} **Administrator or the server owner** is required "
+        f"to use `{ctx.command.qualified_name}`.",
+    )
     return False
