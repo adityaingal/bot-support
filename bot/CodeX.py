@@ -490,6 +490,18 @@ async def on_ready():
         return
     _ready_done = True
 
+    # Safety net: wrap every check registered so far (including cogs and
+    # extensions loaded after setup_hook) so developers in OWNER_IDS can
+    # run any command in any guild. Idempotent — add_command already
+    # covers commands one by one.
+    try:
+        from utils.owner_bypass import install_owner_bypass
+        wrapped = install_owner_bypass(client)
+        if wrapped:
+            log_info(f"Owner bypass installed for {wrapped} command check(s)")
+    except Exception as e:
+        log_warning(f"Owner bypass install failed: {e!r}")
+
     print("""
         \033[1;31m
  ██████╗ ██████╗ ██████╗ ███████╗██╗  ██╗

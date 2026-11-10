@@ -17,7 +17,7 @@ import os
 from utils.Tools import *
 from utils.cv2 import CV2
 from discord.ui import TextDisplay, Separator, ActionRow, LayoutView, Container
-from utils.config import OWNER_IDS_STR
+from utils.owner_bypass import dev_bypass
 
 # Database setup
 db_folder = "db"
@@ -29,7 +29,6 @@ class Nightmode(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.bot.loop.create_task(self.initialize_db())
-        self.ricky = OWNER_IDS_STR
         self.color = 0xFF0000
 
     async def initialize_db(self):
@@ -87,7 +86,7 @@ class Nightmode(commands.Cog):
 
         own = ctx.author.id == ctx.guild.owner_id
         check = await self.is_extra_owner(ctx.author, ctx.guild)
-        if not own and not check and ctx.author.id not in self.ricky:
+        if not own and not check and not dev_bypass(ctx):
             view = CV2(
                 "Access Denied",
                 "Only Server Owner Or Extraowner Can Run This Command.!",
@@ -97,7 +96,7 @@ class Nightmode(commands.Cog):
         if (
             not own
             and not (ctx.guild.me.top_role.position <= ctx.author.top_role.position)
-            and ctx.author.id not in self.ricky
+            and not dev_bypass(ctx)
         ):
             view = CV2(
                 "Access Denied",
@@ -171,7 +170,7 @@ class Nightmode(commands.Cog):
 
         own = ctx.author.id == ctx.guild.owner_id
         check = await self.is_extra_owner(ctx.author, ctx.guild)
-        if not own and not check and ctx.author.id not in self.ricky:
+        if not own and not check and not dev_bypass(ctx):
             view = CV2(
                 "Access Denied",
                 "Only Server Owner Or Extraowner Can Run This Command.!",
@@ -181,7 +180,7 @@ class Nightmode(commands.Cog):
         if (
             not own
             and not (ctx.guild.me.top_role.position <= ctx.author.top_role.position)
-            and ctx.author.id not in self.ricky
+            and not dev_bypass(ctx)
         ):
             view = CV2(
                 "Access Denied",

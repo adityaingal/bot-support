@@ -16,6 +16,7 @@ from discord.ext import commands
 import aiosqlite
 import asyncio
 from utils.config import *
+from utils.owner_bypass import dev_bypass
 
 class TopCheck(commands.Cog):
     def __init__(self, bot):
@@ -81,7 +82,7 @@ class TopCheck(commands.Cog):
         help="Enable topcheck for the guild")
     @commands.guild_only()
     async def topcheck_enable(self, ctx):
-        if ctx.author.id != ctx.guild.owner_id:
+        if ctx.author.id != ctx.guild.owner_id and not dev_bypass(ctx):
             return await ctx.reply(f"{CROSS} Only the **Server Owner** can enable topcheck.")
         if await self.is_topcheck_enabled(ctx.guild.id):
             return await ctx.reply(f"{CROSS} Topcheck is already enabled for this server.")
@@ -93,7 +94,7 @@ class TopCheck(commands.Cog):
         help="Disable topcheck for the guild")
     @commands.guild_only()
     async def topcheck_disable(self, ctx):
-        if ctx.author.id != ctx.guild.owner_id:
+        if ctx.author.id != ctx.guild.owner_id and not dev_bypass(ctx):
             return await ctx.reply("Only the **Server Owner** can disable topcheck.")
         if not await self.is_topcheck_enabled(ctx.guild.id):
             return await ctx.reply(f"{CROSS} Topcheck is not enabled for this server.")

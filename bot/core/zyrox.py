@@ -22,6 +22,7 @@ import typing
 from typing import List
 import aiosqlite
 from utils.config import OWNER_IDS, BotName
+from utils.owner_bypass import install_owner_bypass, wrap_command
 from utils.Tools import getConfig, updateConfig
 from utils.cache import cached_or_fetch, peek, invalidate
 from .Context import Context
@@ -109,6 +110,17 @@ class zyrox(commands.AutoShardedBot):
     async def _access_control(self, ctx: commands.Context) -> bool:
         from utils.access_control import check_command_access
         return await check_command_access(ctx)
+
+    def add_command(self, command, /) -> None:
+        # Every command registered at runtime (initial cog load, reloads,
+        # jishaku) immediately gets the developer permission bypass, so an
+        # OWNER_IDS member is never blocked by has_permissions(...) in a
+        # guild where they hold no role.
+        super().add_command(command)
+        try:
+            wrap_command(command)
+        except Exception as e:
+            print(f"WARNING - owner bypass skipped for {getattr(command, 'name', '?')}: {e!r}", flush=True)
 
     @staticmethod
     def _discord_status() -> discord.Status:

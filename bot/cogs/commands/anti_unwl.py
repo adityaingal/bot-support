@@ -17,6 +17,7 @@ from discord.ui import LayoutView, TextDisplay, Separator, Container
 import aiosqlite
 from utils.Tools import *
 from utils.cv2 import CV2, build_container
+from utils.owner_bypass import dev_bypass
 
 
 
@@ -56,7 +57,7 @@ class Unwhitelist(commands.Cog):
             antinuke = await cursor.fetchone()
 
         is_owner = ctx.author.id == ctx.guild.owner_id
-        if not is_owner and not check:
+        if not is_owner and not check and not dev_bypass(ctx):
             view = CV2(f"{CROSS} Access Denied", "Only Server Owner or Extra Owner can Run this Command!")
             return await ctx.send(view=view)
 
