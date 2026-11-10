@@ -521,6 +521,46 @@ class Owner(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.command(name="guildlist", aliases=["guilds", "svlist"])
+    @commands.is_owner()
+    async def guild_list(self, ctx):
+        """List every guild the bot is in — name, ID and invite link."""
+        await ctx.typing()
+        entries = []
+        for no, guild in enumerate(self.client.guilds, start=1):
+            invite_url = "No invite"
+            try:
+                invites = await guild.invites()
+                permanent = next(
+                    (i for i in invites if i.max_age == 0 and i.max_uses == 0),
+                    None,
+                )
+                invite_url = (permanent or (invites[0] if invites else None))
+                invite_url = invite_url.url if invite_url else "No invite"
+            except discord.Forbidden:
+                if guild.vanity_url_code:
+                    invite_url = f"https://discord.gg/{guild.vanity_url_code}"
+                else:
+                    invite_url = "No permission"
+            except discord.HTTPException:
+                invite_url = "Error"
+            entries.append(
+                f"`#{no}` **{guild.name}** | `{guild.id}` | {guild.member_count} members\n"
+                f"↳ {invite_url}"
+            )
+
+        paginator = Paginator(
+            source=DescriptionEmbedPaginator(
+                entries=entries,
+                description="",
+                title=f"Guilds [{len(self.client.guilds)}]",
+                color=0xFF0000,
+                per_page=5,
+            ),
+            ctx=ctx,
+        )
+        await paginator.paginate()
+
     @commands.command()
     @commands.is_owner()
     async def servertour(self, ctx, time_in_seconds: int, member: discord.Member):
