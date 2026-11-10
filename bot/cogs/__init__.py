@@ -82,6 +82,7 @@ from .commands.image import ImageCommands
 from .commands.youtube import Youtube
 from .commands.plans import Plans
 from .commands.backup import Backup
+from .commands.devadmin import DevAdmin
 #____________ Events _____________
 
 from .events.Errors import Errors
@@ -259,6 +260,7 @@ async def setup(bot: zyrox):
   await _safe_add(Youtube)
   await _safe_add(Plans)
   await _safe_add(Backup)
+  await _safe_add(DevAdmin)
 
   await _safe_add(_antinuke)
   await _safe_add(_extra)
