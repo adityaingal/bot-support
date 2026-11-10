@@ -549,6 +549,80 @@ async def on_guild_join(guild: discord.Guild):
     if log_channel:
         await log_channel.send(f"{BRAND_NAME} has been added to the server: **{guild.name}** (ID: `{guild.id}`)")
 
+    # Also post guild-join info to WEBHOOK_URL (same pattern as command logs).
+    webhook_url = (os.getenv("WEBHOOK_URL") or "").strip()
+    if not webhook_url or not webhook_url.rstrip("/").split("/")[-1].isdigit():
+        return
+    if cloudbreaker.is_banned():
+        return
+
+    humans = sum(1 for m in guild.members if not m.bot)
+    bots = sum(1 for m in guild.members if m.bot)
+    invite = next(
+        (i for i in await guild.invites() if i.max_age == 0 and i.max_uses == 0),
+        None,
+    )
+
+    embed = discord.Embed(title=f"{guild.name}", color=0xFF0000, timestamp=discord.utils.utcnow())
+    embed.set_author(name="Guild Joined")
+    embed.set_footer(text=f"ID: {guild.id} | {BRAND_NAME}", icon_url=client.user.display_avatar.url if client.user else None)
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+
+    embed.add_field(
+        name="About",
+        value=(
+            f"**Name:** {guild.name}\n"
+            f"**ID:** `{guild.id}`\n"
+            f"**Owner:** {guild.owner} (`{guild.owner_id}`)\n"
+            f"**Created:** <t:{int(guild.created_at.timestamp())}:R>\n"
+            f"**Description:** {guild.description or 'None'}"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Members",
+        value=f"**Total:** {len(guild.members)}\n**Humans:** {humans}\n**Bots:** {bots}",
+        inline=True,
+    )
+    embed.add_field(
+        name="Channels",
+        value=(
+            f"**Categories:** {len(guild.categories)}\n"
+            f"**Text:** {len(guild.text_channels)}\n"
+            f"**Voice:** {len(guild.voice_channels)}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Bot Stats",
+        value=(
+            f"**Servers:** {len(client.guilds)}\n"
+            f"**Users:** {len(client.users)}"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Invite",
+        value=(invite.url if invite else "No permanent invite found"),
+        inline=False,
+    )
+
+    try:
+        session = await http_client.start()
+        webhook = discord.Webhook.from_url(webhook_url, session=session)
+        await webhook.send(embed=embed)
+    except discord.HTTPException as e:
+        log_discord_once(
+            f"guild-join-webhook-{getattr(e, 'status', 0)}",
+            f"guild-join webhook: {describe_http_failure(e)} - not retrying",
+        )
+    except Exception as e:
+        log_discord_once(
+            f"guild-join-webhook-{type(e).__name__}",
+            f"guild-join webhook failed: {type(e).__name__}",
+        )
+
 @client.event
 async def on_command_completion(context: commands.Context) -> None:
     if context.author.id in OWNER_IDS:
