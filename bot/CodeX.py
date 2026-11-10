@@ -549,19 +549,15 @@ async def on_guild_join(guild: discord.Guild):
     if log_channel:
         await log_channel.send(f"{BRAND_NAME} has been added to the server: **{guild.name}** (ID: `{guild.id}`)")
 
-    # Also post guild-join info to WEBHOOK_URL (same pattern as command logs).
-    webhook_url = (os.getenv("WEBHOOK_URL") or "").strip()
-    if not webhook_url or not webhook_url.rstrip("/").split("/")[-1].isdigit():
-        return
-    if cloudbreaker.is_banned():
-        return
-
     humans = sum(1 for m in guild.members if not m.bot)
     bots = sum(1 for m in guild.members if m.bot)
-    invite = next(
-        (i for i in await guild.invites() if i.max_age == 0 and i.max_uses == 0),
-        None,
-    )
+    try:
+        invite = next(
+            (i for i in await guild.invites() if i.max_age == 0 and i.max_uses == 0),
+            None,
+        )
+    except discord.HTTPException:
+        invite = None
 
     embed = discord.Embed(title=f"{guild.name}", color=0xFF0000, timestamp=discord.utils.utcnow())
     embed.set_author(name="Guild Joined")
@@ -607,6 +603,29 @@ async def on_guild_join(guild: discord.Guild):
         value=(invite.url if invite else "No permanent invite found"),
         inline=False,
     )
+
+    # DM the bot developers / owners with the same embed.
+    for owner_id in OWNER_IDS:
+        try:
+            owner = await client.fetch_user(owner_id)
+            await owner.send(embed=embed)
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
+            log_discord_once(
+                f"guild-join-dm-{owner_id}-{type(e).__name__}",
+                f"guild-join DM to {owner_id}: {type(e).__name__} (DMs closed?)",
+            )
+        except Exception as e:
+            log_discord_once(
+                f"guild-join-dm-{owner_id}-{type(e).__name__}",
+                f"guild-join DM to {owner_id} failed: {type(e).__name__}",
+            )
+
+    # Also post guild-join info to WEBHOOK_URL (same pattern as command logs).
+    webhook_url = (os.getenv("WEBHOOK_URL") or "").strip()
+    if not webhook_url or not webhook_url.rstrip("/").split("/")[-1].isdigit():
+        return
+    if cloudbreaker.is_banned():
+        return
 
     try:
         session = await http_client.start()
