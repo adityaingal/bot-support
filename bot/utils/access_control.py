@@ -94,6 +94,9 @@ def _is_help_probe(ctx: commands.Context) -> bool:
     A real invocation always has invoked_with matching the command path.
     Never reply during a probe — it would send one embed per gated command.
     """
+    # Explicit probe flag set by HelpCommand.filter_commands (most robust).
+    if getattr(ctx, "_help_probe", False):
+        return True
     help_cmd = ctx.bot.get_command("help") if ctx.bot else None
     invoked = (ctx.invoked_with or "").lower()
     if help_cmd is not None:
