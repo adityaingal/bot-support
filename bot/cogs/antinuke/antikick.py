@@ -31,9 +31,10 @@ class AntiKick(commands.Cog):
     async def fetch_audit_logs(self, guild, action, target_id):
         if not guild.me.guild_permissions.ban_members:
             return None
+        await asyncio.sleep(1)
         try:
-            async for entry in guild.audit_logs(action=action, limit=1):
-                if entry.target.id == target_id:
+            async for entry in guild.audit_logs(action=action, limit=5):
+                if entry.target and entry.target.id == target_id:
                     now = datetime.datetime.now(pytz.utc)
                     created_at = entry.created_at
                     difference = (now - created_at).total_seconds() * 1000

@@ -22,8 +22,9 @@ class AntiPrune(commands.Cog):
         self.bot = bot
 
     async def fetch_audit_logs(self, guild, action):
+        await asyncio.sleep(1)
         try:
-            async for entry in guild.audit_logs(action=action, limit=1):
+            async for entry in guild.audit_logs(action=action, limit=5):
                 now = datetime.datetime.now(pytz.utc)
                 created_at = entry.created_at
                 difference = (now - created_at).total_seconds() * 1000

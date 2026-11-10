@@ -31,8 +31,9 @@ class AntiRoleDelete(commands.Cog):
     async def fetch_audit_logs(self, guild, action):
         if not guild.me.guild_permissions.ban_members:
             return None
+        await asyncio.sleep(1)
         try:
-            async for entry in guild.audit_logs(action=action, limit=1):
+            async for entry in guild.audit_logs(action=action, limit=5):
                 now = datetime.datetime.now(pytz.utc)
                 created_at = entry.created_at
                 difference = (now - created_at).total_seconds() * 1000

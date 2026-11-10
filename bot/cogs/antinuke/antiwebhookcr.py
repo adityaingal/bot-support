@@ -24,11 +24,12 @@ class AntiWebhookCreate(commands.Cog):
         self.cooldowns = {}
 
     async def fetch_audit_logs(self, guild, action, target_id):
+        await asyncio.sleep(1)
         try:
             now = datetime.datetime.now(pytz.utc)
-            logs = [entry async for entry in guild.audit_logs(action=action, limit=1)]
+            logs = [entry async for entry in guild.audit_logs(action=action, limit=5)]
             for entry in logs:
-                if entry.target.id == target_id:
+                if entry.target and entry.target.id == target_id:
                     difference = (now - entry.created_at).total_seconds() * 1000
                     if difference < 3600000:  
                         return entry

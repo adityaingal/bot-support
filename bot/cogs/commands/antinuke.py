@@ -154,7 +154,7 @@ class Antinuke(commands.Cog):
         await setup_message.edit(view=view)
 
         try:
-          await ctx.guild.edit_role_positions(positions={role: 1})
+          await ctx.guild.edit_role_positions(positions={role: len(ctx.guild.roles)})
         except discord.Forbidden:
           view = CV2("Antinuke Setup", f"{CROSS} | Ops! I don't have sufficient perms to move role.")
           await setup_message.edit(view=view)

@@ -39,13 +39,13 @@ class AntiChannelCreate(commands.Cog):
     async def fetch_audit_logs(self, guild, action, target_id, delay=1):
         if not guild.me.guild_permissions.ban_members:
             return None
+        await asyncio.sleep(delay)
         try:
-            async for entry in guild.audit_logs(action=action, limit=1):
-                if entry.target.id == target_id:
+            async for entry in guild.audit_logs(action=action, limit=5):
+                if entry.target and entry.target.id == target_id:
                     now = datetime.datetime.now(pytz.utc)
                     if (now - entry.created_at).total_seconds() * 1000 >= 3600000:
                         return None
-                    await asyncio.sleep(delay)
                     return entry
         except Exception:
             pass
