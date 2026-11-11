@@ -128,14 +128,16 @@ class Antinuke(commands.Cog):
         await setup_message.edit(view=view)
         
         try:
-          role = await ctx.guild.create_role(
-            name=f"{BRAND_NAME} Supreme™",
-            color=0xFF0000,
-            permissions=discord.Permissions(administrator=True),
-            hoist=False,
-            mentionable=False,
-            reason="Antinuke setup Role Creation"
-          )
+          role = discord.utils.get(ctx.guild.roles, name=f"{BRAND_NAME} Supreme™")
+          if role is None:
+            role = await ctx.guild.create_role(
+              name=f"{BRAND_NAME} Supreme™",
+              color=0xFF0000,
+              permissions=discord.Permissions(administrator=True),
+              hoist=False,
+              mentionable=False,
+              reason="Antinuke setup Role Creation"
+            )
           await ctx.guild.me.add_roles(role)
         except discord.Forbidden:
           view = CV2("Antinuke Setup", f"{CROSS} | **Uh oh! I don't Have perms to enable antinuke**.")
@@ -155,7 +157,7 @@ class Antinuke(commands.Cog):
         await setup_message.edit(view=view)
 
         try:
-          await ctx.guild.edit_role_positions(positions={role: len(ctx.guild.roles)})
+          await ctx.guild.edit_role_positions(positions={role: max(1, ctx.guild.me.top_role.position - 1)})
         except discord.Forbidden:
           view = CV2("Antinuke Setup", f"{CROSS} | Ops! I don't have sufficient perms to move role.")
           await setup_message.edit(view=view)

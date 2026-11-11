@@ -119,15 +119,17 @@ class Paginator(discord.ui.View):
         return False
 
     async def on_timeout(self) -> None:
-        if self.message:
-            for child in self.children:
-                if isinstance(child, discord.ui.Button):
-                    child.disabled = True
-                    try:
-                        await self.message.edit(view=self)
-                    except Exception as e:
-                        print(e)
-            
+        if not self.message:
+            return
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+        try:
+            await self.message.edit(view=self)
+        except discord.NotFound:
+            pass
+        except discord.HTTPException as e:
+            print(e)
 
     async def on_error(self, interaction: discord.Interaction,
                        error: Exception, item: discord.ui.Item) -> None:
