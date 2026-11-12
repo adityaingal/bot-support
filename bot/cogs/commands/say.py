@@ -24,29 +24,29 @@ class Say(commands.Cog):
     @commands.has_permissions(administrator=True)
     @commands.cooldown(1, 6, commands.BucketType.user)
     @commands.max_concurrency(1, per=commands.BucketType.default, wait=False)
-    async def msg(self, ctx, target: discord.User = None, *, message: str = None):
-        if target is None:
-            target = ctx.channel
-
+    async def msg(self, ctx, channel: discord.TextChannel = None, user: discord.User = None, *, message: str = None):
         if message is None:
-            error = discord.Embed(description=f"{CROSS} Usage: `!msg <@user> <your message>`", color=0xFF0000)
+            error = discord.Embed(description=f"{CROSS} Usage: `!msg <#channel> <message>` or `!msg @user <message>`", color=0xFF0000)
             return await ctx.send(embed=error)
+
+        if channel is None:
+            channel = ctx.channel
 
         embed = discord.Embed(description=message, color=0xFF0000, timestamp=discord.utils.utcnow())
         embed.set_author(name=f"Message from {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
 
         try:
-            if isinstance(target, (discord.Member, discord.User)):
-                await target.send(embed=embed)
-                dest = f"{target.name} ({target.id})'s DMs"
+            if user is not None:
+                await user.send(embed=embed)
+                dest = f"{user.name} ({user.id})'s DMs"
             else:
-                await target.send(embed=embed)
-                dest = f"#{target.name} ({target.id})"
+                await channel.send(embed=embed)
+                dest = f"#{channel.name} ({channel.id})"
 
             success = discord.Embed(description=f"{TICK} Message sent to {dest}.", color=0xFF0000)
             await ctx.send(embed=success)
         except discord.Forbidden:
-            error = discord.Embed(description=f"{ERROR} Cannot send to {target.name} ({target.id}) — DMs may be closed or no channel permission.", color=0xFF0000)
+            error = discord.Embed(description=f"{ERROR} Cannot send to {dest} — DMs closed or no channel permission.", color=0xFF0000)
             await ctx.send(embed=error)
         except Exception as e:
             error = discord.Embed(description=f"{ERROR} Failed to send: `{e}`", color=0xFF0000)
