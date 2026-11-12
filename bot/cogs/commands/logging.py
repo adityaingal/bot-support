@@ -985,7 +985,7 @@ class ChannelSelectView(View):
                 channel = (
                     interaction.guild.get_channel(channel_id) if channel_id else None
                 )
-                channel_text = channel.mention if channel else "None"
+                channel_text = channel.name if channel else "None"
 
                 config_view = InteractiveConfigView(self.bot, self.author, self.config)
                 from utils.cv2 import CV2
@@ -1034,7 +1034,7 @@ class ChannelSelectView(View):
                         if channel_id
                         else None
                     )
-                    channel_text = channel.mention if channel else "None"
+                    channel_text = channel.name if channel else "None"
 
                     from utils.cv2 import CV2
 
@@ -1091,7 +1091,7 @@ class ChannelSelectView(View):
                 channel_id = self.parent_view.selected_channels.get(category)
                 if channel_id:
                     channel = interaction.guild.get_channel(channel_id)
-                    status = channel.mention if channel else "Configured"
+                    status = channel.name if channel else "Configured"
                 else:
                     status = "Not configured"
 
@@ -1540,7 +1540,7 @@ class Logging(commands.Cog):
                 if log_channels.get(category)
                 else None
             )
-            status = f"{channel.mention if channel else 'Not configured'}"
+            status = f"{channel.name if channel else 'Not configured'}"
             status += (
                 f" {'(Enabled)' if log_enabled.get(category, False) else '(Disabled)'}"
             )
@@ -1637,7 +1637,7 @@ class Logging(commands.Cog):
                 if not (perms.send_messages and perms.embed_links):
                     embed = self._create_modern_embed(
                         "Missing Permissions",
-                        f"I need **Send Messages** and **Embed Links** in {channel.mention}.",
+                        f"I need **Send Messages** and **Embed Links** in {channel.name}.",
                     )
                     await ctx.send(view=embed)
                     return
@@ -1653,7 +1653,7 @@ class Logging(commands.Cog):
                 )
                 embed = self._create_modern_embed(
                     "Auto Setup Complete",
-                    f"All {len(LOG_CATEGORIES)} logging categories now post to {channel.mention}.\n\n"
+                    f"All {len(LOG_CATEGORIES)} logging categories now post to {channel.name}.\n\n"
                     "Use `/log config` to tweak categories or `/log test` to verify.",
                 )
                 await ctx.send(view=embed)
@@ -1679,19 +1679,39 @@ class Logging(commands.Cog):
 
     @commands.hybrid_command(
         name="autolog",
-        description="Create a log channel per category and enable all logging.",
+        description="Create a Logs category with a log channel per category and enable all.",
     )
     @commands.has_permissions(manage_guild=True, manage_channels=True)
     @commands.cooldown(1, 60, commands.BucketType.guild)
     async def autolog(self, ctx: commands.Context, prefix: Optional[str] = None):
-        """One-shot setup: purge old log channels, create <prefix>-<slug>-log per category, enable all."""
+        """One-shot setup: create a Logs category, purge old log channels,
+        create <prefix>-<slug>-log per category inside it, enable all."""
         try:
             raw = prefix or (ctx.guild.me.display_name if ctx.guild.me else None) \
                 or (self.bot.user.name if self.bot.user else "log")
             base = re.sub(r"[^a-z0-9]+", "-", str(raw).lower()).strip("-") or "log"
             slugs = set(LOG_CATEGORY_SLUG.values())
 
-            # 1. Remove old log channels (<slug>-log or *-<slug>-log), never the one we were invoked in
+            # 1. Create (or reuse) the Logs category
+            log_category = None
+            for cat in ctx.guild.categories:
+                if cat.name.lower() == "logs":
+                    log_category = cat
+                    break
+            if log_category is None:
+                overwrites = {
+                    ctx.guild.default_role: discord.PermissionOverwrite(
+                        view_channel=True, send_messages=False
+                    ),
+                    ctx.guild.me: discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, manage_channels=True
+                    ),
+                }
+                log_category = await ctx.guild.create_category(
+                    "Logs", overwrites=overwrites, reason=f"autolog setup by {ctx.author}"
+                )
+
+            # 2. Remove old log channels (<slug>-log or *-<slug>-log), never the one we were invoked in
             deleted: List[str] = []
             failed_delete: List[str] = []
             for channel in list(ctx.guild.text_channels):
@@ -1705,7 +1725,7 @@ class Logging(commands.Cog):
                     except discord.HTTPException:
                         failed_delete.append(channel.name)
 
-            # 2. Create one fresh channel per category
+            # 3. Create one fresh channel per category inside the Logs category
             created: Dict[str, discord.TextChannel] = {}
             failed_create: List[str] = []
             for category in LOG_CATEGORIES:
@@ -1713,12 +1733,14 @@ class Logging(commands.Cog):
                 channel_name = f"{base}-{slug}-log"[:100]
                 try:
                     created[category] = await ctx.guild.create_text_channel(
-                        channel_name, reason=f"autolog setup by {ctx.author}"
+                        channel_name,
+                        category=log_category,
+                        reason=f"autolog setup by {ctx.author}",
                     )
                 except discord.HTTPException:
                     failed_create.append(channel_name)
 
-            # 3. Point every category at its channel and enable it
+            # 4. Point every category at its channel and enable it
             await self._save_log_config(
                 ctx.guild.id,
                 {cat: ch.id for cat, ch in created.items()},
@@ -1730,7 +1752,7 @@ class Logging(commands.Cog):
             )
 
             lines = [f"- #{created[c].name}" for c in LOG_CATEGORIES if c in created]
-            desc = f"**Created {len(created)}/{len(LOG_CATEGORIES)} channels**\n" + "\n".join(lines)
+            desc = f"**Created {len(created)}/{len(LOG_CATEGORIES)} channels** in **{log_category.name}**\n" + "\n".join(lines)
             if deleted:
                 desc += "\n\n**Deleted old log channels:** " + ", ".join(f"`{n}`" for n in deleted[:15])
             if failed_create:
@@ -1894,7 +1916,7 @@ class Logging(commands.Cog):
             )
 
             if user:
-                embed.description += f" for {user.mention}"
+                embed.description += f" for {user.name}"
             if category:
                 embed.description += f" in category {category}"
 
@@ -2317,7 +2339,7 @@ class Logging(commands.Cog):
                     )
                     embed.add_field(name="Category", value=cat, inline=True)
                     embed.add_field(
-                        name="Test User", value=ctx.author.mention, inline=True
+                        name="Test User", value=ctx.author.name, inline=True
                     )
                     embed.add_field(
                         name="Timestamp",
@@ -2479,8 +2501,8 @@ class Logging(commands.Cog):
                 name="Before", value=f"```{before_content}```", inline=False
             )
             embed.add_field(name="After", value=f"```{after_content}```", inline=False)
-            embed.add_field(name="Channel", value=before.channel.mention, inline=True)
-            embed.add_field(name="User", value=f"{before.author.mention}", inline=True)
+            embed.add_field(name="Channel", value=before.channel.name, inline=True)
+            embed.add_field(name="User", value=f"{before.author.name}", inline=True)
             embed.add_field(
                 name="Jump to Message",
                 value=f"[Click here]({after.jump_url})",
@@ -2515,8 +2537,8 @@ class Logging(commands.Cog):
 
             content = message.content[:1000] if message.content else "No content"
             embed.add_field(name="Content", value=f"```{content}```", inline=False)
-            embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-            embed.add_field(name="User", value=message.author.mention, inline=True)
+            embed.add_field(name="Channel", value=message.channel.name, inline=True)
+            embed.add_field(name="User", value=message.author.name, inline=True)
 
             if message.attachments:
                 attachments = "\n".join(
@@ -2547,7 +2569,7 @@ class Logging(commands.Cog):
                 name=member.display_name, icon_url=member.display_avatar.url
             )
 
-            embed.add_field(name="User", value=member.mention, inline=True)
+            embed.add_field(name="User", value=member.name, inline=True)
             embed.add_field(
                 name="Account Created",
                 value=discord.utils.format_dt(member.created_at, "R"),
@@ -2576,7 +2598,7 @@ class Logging(commands.Cog):
             )
 
             embed.add_field(
-                name="User", value=f"{member.mention} ({member})", inline=True
+                name="User", value=f"{member.name} ({member.id})", inline=True
             )
             embed.add_field(
                 name="Joined",
@@ -2590,7 +2612,7 @@ class Logging(commands.Cog):
             )
 
             if member.roles[1:]:
-                roles = ", ".join([role.mention for role in member.roles[1:][:10]])
+                roles = ", ".join([role.name for role in member.roles[1:][:10]])
                 embed.add_field(name="Roles", value=roles, inline=False)
 
             embed.set_footer(text=f"User ID: {member.id}")
@@ -2612,17 +2634,17 @@ class Logging(commands.Cog):
                     name=after.display_name, icon_url=after.display_avatar.url
                 )
 
-                embed.add_field(name="User", value=after.mention, inline=True)
+                embed.add_field(name="User", value=after.name, inline=True)
 
                 added_roles = set(after.roles) - set(before.roles)
                 removed_roles = set(before.roles) - set(after.roles)
 
                 if added_roles:
-                    roles_added = ", ".join([role.mention for role in added_roles])
+                    roles_added = ", ".join([role.name for role in added_roles])
                     embed.add_field(name="Roles Added", value=roles_added, inline=False)
 
                 if removed_roles:
-                    roles_removed = ", ".join([role.mention for role in removed_roles])
+                    roles_removed = ", ".join([role.name for role in removed_roles])
                     embed.add_field(
                         name="Roles Removed", value=roles_removed, inline=False
                     )
@@ -2639,7 +2661,7 @@ class Logging(commands.Cog):
                     name=after.display_name, icon_url=after.display_avatar.url
                 )
 
-                embed.add_field(name="User", value=after.mention, inline=True)
+                embed.add_field(name="User", value=after.name, inline=True)
                 embed.add_field(
                     name="Before", value=before.nick or "No nickname", inline=True
                 )
@@ -2664,14 +2686,14 @@ class Logging(commands.Cog):
             embed = self._create_modern_embed("Member Banned")
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
 
-            embed.add_field(name="User", value=f"{user.mention} ({user})", inline=True)
+            embed.add_field(name="User", value=f"{user.name} ({user.id})", inline=True)
 
             audit_entry = await self._get_audit_log(
                 guild, discord.AuditLogAction.ban, user.id
             )
             if audit_entry:
                 embed.add_field(
-                    name="Banned by", value=audit_entry.user.mention, inline=True
+                    name="Banned by", value=audit_entry.user.name, inline=True
                 )
                 if audit_entry.reason:
                     embed.add_field(
@@ -2692,14 +2714,14 @@ class Logging(commands.Cog):
             embed = self._create_modern_embed("Member Unbanned")
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
 
-            embed.add_field(name="User", value=f"{user.mention} ({user})", inline=True)
+            embed.add_field(name="User", value=f"{user.name} ({user.id})", inline=True)
 
             audit_entry = await self._get_audit_log(
                 guild, discord.AuditLogAction.unban, user.id
             )
             if audit_entry:
                 embed.add_field(
-                    name="Unbanned by", value=audit_entry.user.mention, inline=True
+                    name="Unbanned by", value=audit_entry.user.name, inline=True
                 )
                 if audit_entry.reason:
                     embed.add_field(
@@ -2730,21 +2752,21 @@ class Logging(commands.Cog):
                 name=member.display_name, icon_url=member.display_avatar.url
             )
 
-            embed.add_field(name="User", value=member.mention, inline=True)
+            embed.add_field(name="User", value=member.name, inline=True)
 
             if before.channel and after.channel:
                 embed.add_field(name="Action", value="Moved channels", inline=True)
-                embed.add_field(name="From", value=before.channel.mention, inline=True)
-                embed.add_field(name="To", value=after.channel.mention, inline=True)
+                embed.add_field(name="From", value=before.channel.name, inline=True)
+                embed.add_field(name="To", value=after.channel.name, inline=True)
             elif after.channel:
                 embed.add_field(name="Action", value="Joined voice", inline=True)
                 embed.add_field(
-                    name="Channel", value=after.channel.mention, inline=True
+                    name="Channel", value=after.channel.name, inline=True
                 )
             elif before.channel:
                 embed.add_field(name="Action", value="Left voice", inline=True)
                 embed.add_field(
-                    name="Channel", value=before.channel.mention, inline=True
+                    name="Channel", value=before.channel.name, inline=True
                 )
 
             embed.set_footer(text=f"User ID: {member.id}")
@@ -2759,7 +2781,7 @@ class Logging(commands.Cog):
         try:
             embed = self._create_modern_embed("Channel Created")
 
-            embed.add_field(name="Channel", value=channel.mention, inline=True)
+            embed.add_field(name="Channel", value=channel.name, inline=True)
             embed.add_field(name="Type", value=str(channel.type).title(), inline=True)
             embed.add_field(
                 name="Category",
@@ -2772,7 +2794,7 @@ class Logging(commands.Cog):
             )
             if audit_entry:
                 embed.add_field(
-                    name="Created by", value=audit_entry.user.mention, inline=True
+                    name="Created by", value=audit_entry.user.name, inline=True
                 )
 
             embed.set_footer(text=f"Channel ID: {channel.id}")
@@ -2800,7 +2822,7 @@ class Logging(commands.Cog):
             )
             if audit_entry:
                 embed.add_field(
-                    name="Deleted by", value=audit_entry.user.mention, inline=True
+                    name="Deleted by", value=audit_entry.user.name, inline=True
                 )
 
             embed.set_footer(text=f"Channel ID: {channel.id}")
@@ -2832,7 +2854,7 @@ class Logging(commands.Cog):
                 return
 
             embed = self._create_modern_embed("Channel Updated")
-            embed.add_field(name="Channel", value=after.mention, inline=True)
+            embed.add_field(name="Channel", value=after.name, inline=True)
             embed.add_field(name="Changes", value="\n".join(changes), inline=False)
 
             audit_entry = await self._get_audit_log(
@@ -2840,7 +2862,7 @@ class Logging(commands.Cog):
             )
             if audit_entry:
                 embed.add_field(
-                    name="Updated by", value=audit_entry.user.mention, inline=True
+                    name="Updated by", value=audit_entry.user.name, inline=True
                 )
 
             embed.set_footer(text=f"Channel ID: {after.id}")
@@ -2855,7 +2877,7 @@ class Logging(commands.Cog):
         try:
             embed = self._create_modern_embed("Role Created")
 
-            embed.add_field(name="Role", value=role.mention, inline=True)
+            embed.add_field(name="Role", value=role.name, inline=True)
             embed.add_field(name="Color", value=str(role.color), inline=True)
             embed.add_field(
                 name="Mentionable",
@@ -2868,7 +2890,7 @@ class Logging(commands.Cog):
             )
             if audit_entry:
                 embed.add_field(
-                    name="Created by", value=audit_entry.user.mention, inline=True
+                    name="Created by", value=audit_entry.user.name, inline=True
                 )
 
             embed.set_footer(text=f"Role ID: {role.id}")
@@ -2892,7 +2914,7 @@ class Logging(commands.Cog):
             )
             if audit_entry:
                 embed.add_field(
-                    name="Deleted by", value=audit_entry.user.mention, inline=True
+                    name="Deleted by", value=audit_entry.user.name, inline=True
                 )
 
             embed.set_footer(text=f"Role ID: {role.id}")
@@ -2925,7 +2947,7 @@ class Logging(commands.Cog):
                 return
 
             embed = self._create_modern_embed("Role Updated")
-            embed.add_field(name="Role", value=after.mention, inline=True)
+            embed.add_field(name="Role", value=after.name, inline=True)
             embed.add_field(name="Changes", value="\n".join(changes), inline=False)
 
             audit_entry = await self._get_audit_log(
@@ -2933,7 +2955,7 @@ class Logging(commands.Cog):
             )
             if audit_entry:
                 embed.add_field(
-                    name="Updated by", value=audit_entry.user.mention, inline=True
+                    name="Updated by", value=audit_entry.user.name, inline=True
                 )
 
             embed.set_footer(text=f"Role ID: {after.id}")
@@ -2970,7 +2992,7 @@ class Logging(commands.Cog):
             )
             if audit_entry:
                 embed.add_field(
-                    name="Updated by", value=audit_entry.user.mention, inline=True
+                    name="Updated by", value=audit_entry.user.name, inline=True
                 )
 
             embed.set_footer(text=f"Guild ID: {after.id}")
@@ -3004,10 +3026,10 @@ class Logging(commands.Cog):
                     )
                     if audit_entry:
                         embed.add_field(
-                            name="Created by",
-                            value=audit_entry.user.mention,
-                            inline=True,
-                        )
+                        name="Created by",
+                        value=audit_entry.user.name,
+                        inline=True,
+                    )
 
                     embed.set_footer(text=f"Emoji ID: {emoji.id}")
                     await self._send_log(guild, "emoji_events", embed)
@@ -3028,10 +3050,10 @@ class Logging(commands.Cog):
                     )
                     if audit_entry:
                         embed.add_field(
-                            name="Deleted by",
-                            value=audit_entry.user.mention,
-                            inline=True,
-                        )
+                        name="Deleted by",
+                        value=audit_entry.user.name,
+                        inline=True,
+                    )
 
                     embed.set_footer(text=f"Emoji ID: {emoji.id}")
                     await self._send_log(guild, "emoji_events", embed)
@@ -3048,7 +3070,7 @@ class Logging(commands.Cog):
             embed = self._create_modern_embed("Reaction Added")
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
 
-            embed.add_field(name="User", value=user.mention, inline=True)
+            embed.add_field(name="User", value=user.name, inline=True)
             embed.add_field(name="Reaction", value=str(reaction.emoji), inline=True)
             embed.add_field(
                 name="Message",
@@ -3056,7 +3078,7 @@ class Logging(commands.Cog):
                 inline=True,
             )
             embed.add_field(
-                name="Channel", value=reaction.message.channel.mention, inline=True
+                name="Channel", value=reaction.message.channel.name, inline=True
             )
 
             embed.set_footer(
@@ -3083,7 +3105,7 @@ class Logging(commands.Cog):
             embed = self._create_modern_embed("Reaction Removed")
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
 
-            embed.add_field(name="User", value=user.mention, inline=True)
+            embed.add_field(name="User", value=user.name, inline=True)
             embed.add_field(name="Reaction", value=str(reaction.emoji), inline=True)
             embed.add_field(
                 name="Message",
@@ -3091,7 +3113,7 @@ class Logging(commands.Cog):
                 inline=True,
             )
             embed.add_field(
-                name="Channel", value=reaction.message.channel.mention, inline=True
+                name="Channel", value=reaction.message.channel.name, inline=True
             )
 
             embed.set_footer(
