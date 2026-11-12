@@ -257,13 +257,20 @@ class CategoryConfigView(discord.ui.View):
             db.execute('INSERT INTO ticket_categories (guild_id, name, emoji, notified_roles, button_style, discord_category_id) VALUES (?,?,?,?,?,?)', (guild_id,cat['name'],cat['emoji'],cat['notified_roles'],cat['button_style'],cat_ch.id))
         config = db.fetchone("SELECT * FROM guild_configs WHERE guild_id=?", (guild_id,))
         panel_ch = self.ctx.guild.get_channel(config['panel_channel_id'])
+        if not panel_ch:
+            return await inter.followup.send(f"{ERROR} Panel channel not found. Run `!ticket setup` again.", ephemeral=True)
         panel_embed = discord.Embed(title=config['embed_title'], description=config['embed_description'], color=config['embed_color'])
         if img_url := config['embed_image_url']: panel_embed.set_image(url=img_url)
         if thumb_url := config['embed_thumbnail_url']: panel_embed.set_thumbnail(url=thumb_url)
         final_view = self.cog.create_panel_view(guild_id)
-        msg = await panel_ch.send(embed=panel_embed, view=final_view)
+        if not final_view:
+            return await inter.followup.send(f"{ERROR} No ticket categories configured. Run `!ticket setup` again.", ephemeral=True)
+        try:
+            msg = await panel_ch.send(embed=panel_embed, view=final_view)
+        except discord.HTTPException as e:
+            return await inter.followup.send(f"{ERROR} Failed to post panel: `{e}`. Check emoji in categories.", ephemeral=True)
         db.execute("UPDATE guild_configs SET panel_message_id = ? WHERE guild_id = ?", (msg.id, guild_id))
-        await self.message.edit(content=f"{SUCCESS_EMOJI} Setup complete! Panel sent to {panel_ch.mention}.", view=None, embed=None)
+        await self.message.edit(content=f"{SUCCESS_EMOJI} Setup complete! Panel sent to {panel_ch.name}.", view=None, embed=None)
         self.stop()
 
 class TicketCog(commands.Cog, name="Ticket System"):
@@ -282,10 +289,16 @@ class TicketCog(commands.Cog, name="Ticket System"):
         if not config or not categories: return None
         view_class = TicketPanelSelect if config['panel_type'] == 'dropdown' else TicketPanelButtons
         view = view_class(self)
-        if config['panel_type'] == 'dropdown':
-            view.children[0].options = [discord.SelectOption(label=c['name'], value=str(c['category_id']), emoji=c['emoji']) for c in categories]
-        else:
-            for c in categories: view.add_item(discord.ui.Button(label=c['name'], style=discord.ButtonStyle(c['button_style']), emoji=c['emoji'], custom_id=f"create_ticket_{c['category_id']}"))
+        try:
+            if config['panel_type'] == 'dropdown':
+                view.children[0].options = [discord.SelectOption(label=c['name'], value=str(c['category_id']), emoji=c['emoji']) for c in categories]
+            else:
+                for c in categories:
+                    try: style = discord.ButtonStyle(int(c['button_style'])) if c['button_style'] else discord.ButtonStyle.secondary
+                    except: style = discord.ButtonStyle.secondary
+                    view.add_item(discord.ui.Button(label=c['name'], style=style, emoji=c['emoji'], custom_id=f"create_ticket_{c['category_id']}"))
+        except Exception:
+            return None
         return view
 
     def cog_unload(self): self.db.close()
