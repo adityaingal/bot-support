@@ -24,12 +24,12 @@ class Say(commands.Cog):
     @commands.has_permissions(administrator=True)
     @commands.cooldown(1, 6, commands.BucketType.user)
     @commands.max_concurrency(1, per=commands.BucketType.default, wait=False)
-    async def msg(self, ctx, target: discord.TextChannel | discord.Member | discord.User = None, *, message: str = None):
+    async def msg(self, ctx, target: discord.User = None, *, message: str = None):
         if target is None:
             target = ctx.channel
 
         if message is None:
-            error = discord.Embed(description=f"{CROSS} Usage: `!msg <#channel/@user> <your message>`", color=0xFF0000)
+            error = discord.Embed(description=f"{CROSS} Usage: `!msg <@user> <your message>`", color=0xFF0000)
             return await ctx.send(embed=error)
 
         embed = discord.Embed(description=message, color=0xFF0000, timestamp=discord.utils.utcnow())
