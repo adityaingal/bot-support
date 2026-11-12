@@ -62,6 +62,8 @@ from .commands.owner2 import Global
 from .commands.qr import QR
 from .commands.vanityroles import VanityRoles
 from .commands.reactionroles import ReactionRoles 
+from .commands.rules import Rules
+from .commands.say import Say
 from .commands.messages import Messages
 from .commands.fastgreet import FastGreet
 from .commands.counting import Counting
@@ -110,7 +112,6 @@ from .zyrox.server import _server
 from .zyrox.voice import _voice 
 from .zyrox.welcome import _welcome 
 from .zyrox.giveaway import _giveaway
-from .zyrox.ticket import _ticket
 from .zyrox.logging import _logging
 from .zyrox.vanity import _vanity
 from .zyrox.inviteTracker import inviteTracker 
@@ -240,6 +241,8 @@ async def setup(bot: zyrox):
   await _safe_add(QR)
   await _safe_add(VanityRoles)
   await _safe_add(ReactionRoles)
+  await _safe_add(Rules)
+  await _safe_add(Say)
   await _safe_add(Messages)
   await _safe_add(TranslateCog)
   await _safe_add(FastGreet)
@@ -275,7 +278,6 @@ async def setup(bot: zyrox):
   await _safe_add(_voice)
   await _safe_add(_welcome)
   await _safe_add(_giveaway)
-  await _safe_add(_ticket)
   await _safe_add(_logging)
   await _safe_add(_vanity)
   await _safe_add(inviteTracker)

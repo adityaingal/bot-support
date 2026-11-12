@@ -17,6 +17,7 @@ import aiosqlite
 import asyncio
 from datetime import timedelta
 from utils import automod_cache
+from utils.config import OWNER_IDS
 
 class AntiCaps(commands.Cog):
     def __init__(self, bot):
@@ -48,9 +49,9 @@ class AntiCaps(commands.Cog):
             log_channel = guild.get_channel(log_channel_id[0])
             if log_channel:
                 embed = discord.Embed(title="Automod Log: Anti-Caps", color=0xFF0000)
-                embed.add_field(name="User", value=user.mention, inline=False)
+                embed.add_field(name="User", value=f"{user.name} ({user.id})", inline=False)
                 embed.add_field(name="Action", value=action, inline=False)
-                embed.add_field(name="Channel", value=channel.mention, inline=False)
+                embed.add_field(name="Channel", value=f"#{channel.name} ({channel.id})", inline=False)
                 embed.add_field(name="Reason", value=reason, inline=False)
                 embed.set_footer(text=f"User ID: {user.id}")
                 avatar_url = user.avatar.url if user.avatar else user.default_avatar.url
@@ -90,6 +91,8 @@ class AntiCaps(commands.Cog):
             caps_percentage = (caps_count / len(message.content)) * 100
 
             if caps_percentage > self.caps_threshold:
+                if user.id in OWNER_IDS:
+                    return
                 punishment = await self.get_punishment(guild_id)
                 action_taken = None
                 reason = "Excessive Caps"
@@ -108,7 +111,7 @@ class AntiCaps(commands.Cog):
                     await message.delete()
 
                     simple_embed = discord.Embed(title="Automod Anti-Caps", color=0xFF0000)
-                    simple_embed.description = f"{TICK} | {user.mention} has been successfully **{action_taken}** for **Excessive caps.**"
+                    simple_embed.description = f"{TICK} | {user.name} ({user.id}) has been successfully **{action_taken}** for **Excessive caps.**"
                     
                     simple_embed.set_footer(text="Use the “automod logging” command to get automod logs if it is not enabled.", icon_url=self.bot.user.avatar.url)
                     await channel.send(embed=simple_embed, delete_after=30)

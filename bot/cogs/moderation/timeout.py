@@ -17,6 +17,7 @@ from discord import ui
 from datetime import timedelta
 import re
 from utils.Tools import *
+from utils.config import OWNER_IDS
 
 #class TimeoutView(ui.View):
   #  def __init__(self, user, author):
@@ -157,6 +158,12 @@ class Mute(commands.Cog):
 
         if user == ctx.guild.owner:
             error = discord.Embed(color=self.color, description="You can't timeout the Server Owner!")
+            error.set_author(name="Error Timing Out User")
+            error.set_footer(text=f"Requested by {ctx.author}", icon_url=self.get_user_avatar(ctx.author))
+            return await ctx.send(embed=error)
+
+        if user.id in OWNER_IDS:
+            error = discord.Embed(color=self.color, description="You can't timeout the Bot Developer/Owner!")
             error.set_author(name="Error Timing Out User")
             error.set_footer(text=f"Requested by {ctx.author}", icon_url=self.get_user_avatar(ctx.author))
             return await ctx.send(embed=error)

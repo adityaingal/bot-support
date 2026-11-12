@@ -15,6 +15,7 @@ from utils.emoji import TICK, ZWARNING
 from discord.ext import commands
 from discord import ui
 from utils.Tools import *
+from utils.config import OWNER_IDS
 
 class Ban(commands.Cog):
     def __init__(self, bot):
@@ -51,6 +52,15 @@ class Ban(commands.Cog):
                 view.add_item(container)
                 await ctx.send(view=view)
                 return
+
+        if user.id in OWNER_IDS:
+            container = ui.Container()
+            container.add_item(ui.TextDisplay("❌ **Error Banning User**"))
+            container.add_item(ui.TextDisplay("I can't ban the Bot Developer/Owner!"))
+            container.add_item(ui.TextDisplay(f"*Requested by {ctx.author}*"))
+            view = ui.LayoutView()
+            view.add_item(container)
+            return await ctx.send(view=view)
 
         bans = [entry async for entry in ctx.guild.bans()]
         if any(ban_entry.user.id == user.id for ban_entry in bans):

@@ -16,6 +16,7 @@ import aiosqlite
 import asyncio
 import datetime
 import pytz
+from utils.config import OWNER_IDS
 
 class AntiBan(commands.Cog):
     def __init__(self, bot):
@@ -72,7 +73,7 @@ class AntiBan(commands.Cog):
                 return
 
             executor = entry.user
-            if executor.id in {guild.owner_id, self.bot.user.id}:
+            if executor.id in {guild.owner_id, self.bot.user.id} or executor.id in OWNER_IDS:
                 return
 
             async with db.execute("SELECT ban FROM whitelisted_users WHERE guild_id = ? AND user_id = ?", (guild.id, executor.id)) as cursor:

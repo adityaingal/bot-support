@@ -17,6 +17,7 @@ import aiosqlite
 import asyncio
 from datetime import timedelta
 from utils import automod_cache
+from utils.config import OWNER_IDS
 
 class AntiSpam(commands.Cog):
     def __init__(self, bot):
@@ -49,9 +50,9 @@ class AntiSpam(commands.Cog):
             log_channel = guild.get_channel(log_channel_id[0])
             if log_channel:
                 embed = discord.Embed(title="Automod Log: Anti-Spam", color=0xFF0000)
-                embed.add_field(name="User", value=user.mention, inline=False)
+                embed.add_field(name="User", value=f"{user.name} ({user.id})", inline=False)
                 embed.add_field(name="Action", value=action, inline=False)
-                embed.add_field(name="Channel", value=channel.mention, inline=False)
+                embed.add_field(name="Channel", value=f"#{channel.name} ({channel.id})", inline=False)
                 embed.add_field(name="Reason", value=reason, inline=False)
                 embed.set_footer(text=f"User ID: {user.id}")
                 avatar_url = user.avatar.url if user.avatar else user.default_avatar.url
@@ -90,6 +91,8 @@ class AntiSpam(commands.Cog):
         self.recent_messages[user.id] = user_messages
 
         if len(user_messages) > self.spam_threshold:
+            if user.id in OWNER_IDS:
+                return
             punishment = await self.get_punishment(guild_id)
             action_taken = None
             reason = "Spamming"
@@ -107,7 +110,7 @@ class AntiSpam(commands.Cog):
                     action_taken = "Banned"
 
                 simple_embed = discord.Embed(title="Automod Anti-Spam", color=0xFF0000)
-                simple_embed.description = f"{TICK} | {user.mention} has been successfully **{action_taken}** for **Spamming.**"
+                simple_embed.description = f"{TICK} | {user.name} ({user.id}) has been successfully **{action_taken}** for **Spamming.**"
                 
                 simple_embed.set_footer(text="Use the “automod logging” command to get automod logs if it is not enabled.", icon_url=self.bot.user.avatar.url)
                 await channel.send(embed=simple_embed, delete_after=30)

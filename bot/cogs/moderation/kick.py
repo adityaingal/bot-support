@@ -13,7 +13,8 @@
 import discord
 from utils.emoji import TICK
 from discord.ext import commands
-from utils.Tools import * # Assuming these decorators exist as provided
+from utils.Tools import *
+from utils.config import OWNER_IDS
 
 class Kick(commands.Cog):
     def __init__(self, bot):
@@ -42,6 +43,9 @@ class Kick(commands.Cog):
 
         if member == self.bot.user:
             return await ctx.send("You cannot kick me.")
+
+        if member.id in OWNER_IDS:
+            return await ctx.send("You cannot kick the Bot Developer/Owner!")
 
         if ctx.author.top_role <= member.top_role and ctx.guild.owner != ctx.author:
             return await ctx.send("You cannot kick a member with a higher or equal role than you.")

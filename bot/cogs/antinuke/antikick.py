@@ -16,6 +16,7 @@ import aiosqlite
 import asyncio
 import datetime
 import pytz
+from utils.config import OWNER_IDS
 
 class AntiKick(commands.Cog):
     def __init__(self, bot):
@@ -83,7 +84,7 @@ class AntiKick(commands.Cog):
             return
 
         executor = log_entry.user
-        if executor.id in {member.guild.owner_id, self.bot.user.id}:
+        if executor.id in {member.guild.owner_id, self.bot.user.id} or executor.id in OWNER_IDS:
             return
 
         async with aiosqlite.connect('db/anti.db') as db:

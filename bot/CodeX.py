@@ -684,11 +684,11 @@ async def on_command_completion(context: commands.Context) -> None:
     embed.set_thumbnail(url=avatar_url)
 
     if context.guild is not None:
-        embed.add_field(name="User", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
-        embed.add_field(name="Server", value=f"{context.guild.name} (`{context.guild.id}`)", inline=False)
-        embed.add_field(name="Channel", value=f"{context.channel.mention} (`{context.channel.id}`)", inline=False)
+        embed.add_field(name="User", value=f"{context.author.name} ({context.author.id})", inline=False)
+        embed.add_field(name="Server", value=f"{context.guild.name} ({context.guild.id})", inline=False)
+        embed.add_field(name="Channel", value=f"#{context.channel.name} ({context.channel.id})", inline=False)
     else:
-        embed.add_field(name="User (DM)", value=f"{context.author.mention} (`{context.author.id}`)", inline=False)
+        embed.add_field(name="User (DM)", value=f"{context.author.name} ({context.author.id})", inline=False)
 
     embed.timestamp = discord.utils.utcnow()
     embed.set_footer(text=f"{BRAND_NAME} Development™ ❤️", icon_url=client.user.display_avatar.url)

@@ -18,6 +18,7 @@ import re
 from datetime import timedelta
 import asyncio
 from utils import automod_cache
+from utils.config import OWNER_IDS
 
 # Precompiled once at import — this used to re.compile() on every message.
 EMOJI_PATTERN = re.compile(
@@ -66,9 +67,9 @@ class AntiEmojiSpam(commands.Cog):
             log_channel = guild.get_channel(log_channel_id[0])
             if log_channel:
                 embed = discord.Embed(title="Automod Log: Anti Emoji Spam", color=0xFF0000)
-                embed.add_field(name="User", value=user.mention, inline=False)
+                embed.add_field(name="User", value=f"{user.name} ({user.id})", inline=False)
                 embed.add_field(name="Action", value=action, inline=False)
-                embed.add_field(name="Channel", value=channel.mention, inline=False)
+                embed.add_field(name="Channel", value=f"#{channel.name} ({channel.id})", inline=False)
                 embed.add_field(name="Reason", value=reason, inline=False)
                 embed.set_footer(text=f"User ID: {user.id}")
                 avatar_url = user.avatar.url if user.avatar else user.default_avatar.url
@@ -103,6 +104,8 @@ class AntiEmojiSpam(commands.Cog):
         emoji_count = len(EMOJI_PATTERN.findall(message.content))
 
         if emoji_count > self.emoji_threshold:
+            if user.id in OWNER_IDS:
+                return
             punishment = await self.get_punishment(guild_id)
             action_taken = None
             reason = f"Emoji Spam ({emoji_count} emojis)"
@@ -122,7 +125,7 @@ class AntiEmojiSpam(commands.Cog):
                 await message.delete()
                 
                 simple_embed = discord.Embed(title="Automod Anti Emoji Spam", color=0xFF0000)
-                simple_embed.description = f"{TICK} | {user.mention} has been successfully **{action_taken}** for **Spamming Emojis.**"
+                simple_embed.description = f"{TICK} | {user.name} ({user.id}) has been successfully **{action_taken}** for **Spamming Emojis.**"
                 
                 simple_embed.set_footer(text="Use the “automod logging” command to get automod logs if it is not enabled.", icon_url=self.bot.user.avatar.url)
                 await channel.send(embed=simple_embed, delete_after=30)

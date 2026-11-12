@@ -13,7 +13,7 @@
 # cogs/commands/ticket.py
 
 import discord
-from utils.emoji import CROSS, DELETE_ALT1, HANDSHAKE, LOCK, TICK, UNLOCK, ZBAN, ZMODULE, ZWRENCH
+from utils.emoji import CROSS, TICK
 from discord import app_commands
 from discord.ext import commands
 import sqlite3
@@ -31,13 +31,13 @@ TICKET_CHANNEL_IMAGE_URL = "https://cdn.discordapp.com/attachments/1403014653214
 # --- Emoji Variables ---
 SUCCESS_EMOJI = TICK
 ERROR_EMOJI = CROSS
-LOCK_EMOJI = f"{UNLOCK} "
-UNLOCK_EMOJI = LOCK
-CLAIM_EMOJI = HANDSHAKE
-CLOSE_EMOJI = ZBAN
-DELETE_EMOJI = DELETE_ALT1
-REOPEN_EMOJI = ZWRENCH
-TRANSCRIPT_EMOJI = ZMODULE
+LOCK_EMOJI = "🔒"
+UNLOCK_EMOJI = "🔓"
+CLAIM_EMOJI = "🤝"
+CLOSE_EMOJI = "🔨"
+DELETE_EMOJI = "🗑️"
+REOPEN_EMOJI = "🔧"
+TRANSCRIPT_EMOJI = "📜"
 
 # --- Constants ---
 if not os.path.exists('db'):
@@ -83,7 +83,7 @@ async def get_or_create_log_channel(db, guild):
 async def log_ticket_action(db, guild, user, action, details):
     if log_channel := await get_or_create_log_channel(db, guild):
         embed = discord.Embed(title=f"Ticket Action: {action}", color=EMBED_COLOR, timestamp=datetime.now())
-        embed.add_field(name="Action By", value=user.mention).add_field(name="Details", value=details, inline=False)
+        embed.add_field(name="Action By", value=f"{user.name} ({user.id})").add_field(name="Details", value=details, inline=False)
         try: await log_channel.send(embed=embed)
         except: pass
 
@@ -326,6 +326,69 @@ class TicketCog(commands.Cog, name="Ticket System"):
         await ch.send(content=" ".join(pings), embed=ticket_embed, view=TicketActionsView(self, ch.id, cat_id))
         await inter.followup.send(f"Your ticket has been successfully created: {ch.mention}", ephemeral=True)
 
+    async def _dispatch_action(self, ctx, action):
+        db = self.db
+        row = db.fetchone("SELECT * FROM open_tickets WHERE channel_id = ?", (ctx.channel.id,))
+        if not row:
+            await ctx.send("This is not a ticket channel.")
+            return
+        guild = ctx.guild
+        if action == "lock":
+            t = row
+            if t['is_locked']:
+                await ctx.send("This ticket is already locked.")
+                return
+            creator = guild.get_member(t['creator_id'])
+            if creator:
+                await ctx.channel.set_permissions(creator, send_messages=False)
+            db.execute("UPDATE open_tickets SET is_locked=1 WHERE channel_id=?", (ctx.channel.id,))
+            await ctx.send(f"{LOCK_EMOJI} Ticket locked by {ctx.author.name} ({ctx.author.id}).")
+            await log_ticket_action(db, guild, ctx.author, "Locked", f"{ctx.channel.mention}")
+        elif action == "unlock":
+            t = row
+            if not t['is_locked']:
+                await ctx.send("This ticket is already unlocked.")
+                return
+            creator = guild.get_member(t['creator_id'])
+            if creator:
+                await ctx.channel.set_permissions(creator, send_messages=True)
+            db.execute("UPDATE open_tickets SET is_locked=0 WHERE channel_id=?", (ctx.channel.id,))
+            await ctx.send(f"{UNLOCK_EMOJI} Ticket unlocked by {ctx.author.name} ({ctx.author.id}).")
+            await log_ticket_action(db, guild, ctx.author, "Unlocked", f"{ctx.channel.mention}")
+        elif action == "claim":
+            t = row
+            if t['is_claimed']:
+                await ctx.send(f"This ticket is already claimed by <@{t['claimed_by_id']}>.")
+                return
+            db.execute("UPDATE open_tickets SET is_claimed=1, claimed_by_id=? WHERE channel_id=?", (ctx.author.id, ctx.channel.id))
+            await ctx.send(f"{CLAIM_EMOJI} Ticket claimed by {ctx.author.name} ({ctx.author.id}). They will now handle this request.")
+            await log_ticket_action(db, guild, ctx.author, "Claimed", f"{ctx.channel.mention}")
+        elif action == "close":
+            t = row
+            creator = guild.get_member(t['creator_id'])
+            if creator:
+                db.execute("UPDATE user_ticket_counts SET ticket_count=MAX(0,ticket_count-1) WHERE guild_id=? AND user_id=?", (guild.id, creator.id))
+                await ctx.channel.set_permissions(creator, send_messages=False, view_channel=False)
+            category_info = db.fetchone("SELECT name FROM ticket_categories WHERE category_id=?", (t['category_db_id'],))
+            category_name = category_info['name'] if category_info else "Unknown"
+            closed_category = await get_or_create_closed_category(db, guild)
+            if closed_category:
+                await ctx.channel.edit(category=closed_category)
+            db.execute("UPDATE open_tickets SET closed_by_id=?, closed_at=? WHERE channel_id=?", (ctx.author.id, datetime.now().isoformat(), ctx.channel.id))
+            await log_ticket_action(db, guild, ctx.author, "Closed", f"Ticket {ctx.channel.mention} (Category: {category_name})")
+            closed_embed = discord.Embed(
+                title="Ticket Closed",
+                description=f"This ticket has been officially closed and archived by {ctx.author.name} ({ctx.author.id}).\nThe user has been removed from the channel.\n\nStaff can use the buttons below to reopen, create a transcript, or permanently delete the channel.",
+                color=EMBED_COLOR,
+                timestamp=datetime.now()
+            )
+            closed_embed.add_field(name="Ticket Creator", value=f"<@{t['creator_id']}>", inline=True)
+            closed_embed.add_field(name="Closed By", value=f"{ctx.author.name} ({ctx.author.id})", inline=True)
+            closed_embed.add_field(name="Original Category", value=category_name, inline=True)
+            
+            await ctx.channel.send(embed=closed_embed, view=ClosedTicketActionsView(self, ctx.channel.id, t['category_db_id']))
+            await ctx.send("Ticket successfully closed and archived.")
+
     @commands.hybrid_group(name="ticket", description="Main command group for the ticket system.")
     @commands.guild_only()
     async def ticket(self, ctx):
@@ -359,6 +422,17 @@ class TicketCog(commands.Cog, name="Ticket System"):
     async def transcript(self, ctx):
         if not ctx.interaction: return await ctx.send("Please use the slash command version of this command.")
         await ClosedTicketActionsView(self, ctx.channel.id)._generate_transcript(ctx.interaction, False)
+
+    @ticket.command(name="reset", description="Reset all ticket data for this server (categories, config, tickets, counts).")
+    @commands.has_permissions(administrator=True)
+    async def reset(self, ctx):
+        db = self.db
+        gid = ctx.guild.id
+        db.execute("DELETE FROM open_tickets WHERE guild_id = ?", (gid,))
+        db.execute("DELETE FROM user_ticket_counts WHERE guild_id = ?", (gid,))
+        db.execute("DELETE FROM ticket_categories WHERE guild_id = ?", (gid,))
+        db.execute("DELETE FROM guild_configs WHERE guild_id = ?", (gid,))
+        await ctx.send(f"{SUCCESS_EMOJI} All ticket data for **{ctx.guild.name}** has been reset. Run `!ticket setup` to configure again.")
 
 class TicketPanelSelect(discord.ui.View):
     def __init__(self, cog): super().__init__(timeout=None); self.cog = cog

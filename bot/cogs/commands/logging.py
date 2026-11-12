@@ -1639,7 +1639,7 @@ class Logging(commands.Cog):
                         "Missing Permissions",
                         f"I need **Send Messages** and **Embed Links** in {channel.mention}.",
                     )
-                    await ctx.send(view=embed, ephemeral=True)
+                    await ctx.send(view=embed)
                     return
 
                 await self._save_log_config(
@@ -1665,7 +1665,7 @@ class Logging(commands.Cog):
                     "Configuration Exists",
                     "Logging is already configured. Use /log config to modify or /log reset to start over.",
                 )
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             view = LogSetupLayoutView(self.bot, ctx.author, LOG_CATEGORIES)
@@ -1791,7 +1791,7 @@ class Logging(commands.Cog):
                     "Invalid Hours", "Hours must be between 1 and 168 (1 week)."
                 )
                 # embed.set_footer removed - CV2 doesn't support it
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             if category and category not in LOG_CATEGORIES:
@@ -1799,7 +1799,7 @@ class Logging(commands.Cog):
                     "Invalid Category", f"Valid categories: {', '.join(LOG_CATEGORIES)}"
                 )
                 # embed.set_footer removed - CV2 doesn't support it
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             await ctx.defer()
@@ -1934,7 +1934,7 @@ class Logging(commands.Cog):
             try:
                 await ctx.followup.send(view=embed)
             except:
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
 
     @log.command(name="reset", description="Reset all logging configuration.")
     @commands.has_permissions(manage_guild=True)
@@ -1977,7 +1977,7 @@ class Logging(commands.Cog):
                     "Invalid Category", f"Valid categories: {', '.join(LOG_CATEGORIES)}"
                 )
                 # embed.set_footer removed - CV2 doesn't support it
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             config = await self._get_log_config(ctx.guild.id)
@@ -2083,7 +2083,7 @@ class Logging(commands.Cog):
                     "Invalid Action", "Valid actions: add, remove, list, clear"
                 )
                 # embed.set_footer removed - CV2 doesn't support it
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             config = await self._get_log_config(ctx.guild.id)
@@ -2154,7 +2154,7 @@ class Logging(commands.Cog):
                     f"Usage: /log ignore {action} <channel|role|user> <target>",
                 )
                 # embed.set_footer removed - CV2 doesn't support it
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             ignore_channels = config.get("ignore_channels", [])
@@ -2180,7 +2180,7 @@ class Logging(commands.Cog):
                         "Channel Not Found", "Could not find the specified channel."
                     )
                     # embed.set_footer removed - CV2 doesn't support it
-                    await ctx.send(view=embed, ephemeral=True)
+                    await ctx.send(view=embed)
                     return
 
                 target_list = ignore_channels
@@ -2202,7 +2202,7 @@ class Logging(commands.Cog):
                         "Role Not Found", "Could not find the specified role."
                     )
                     # embed.set_footer removed - CV2 doesn't support it
-                    await ctx.send(view=embed, ephemeral=True)
+                    await ctx.send(view=embed)
                     return
 
                 target_list = ignore_roles
@@ -2228,7 +2228,7 @@ class Logging(commands.Cog):
                         "User Not Found", "Could not find the specified user."
                     )
                     # embed.set_footer removed - CV2 doesn't support it
-                    await ctx.send(view=embed, ephemeral=True)
+                    await ctx.send(view=embed)
                     return
 
                 target_list = ignore_users
@@ -2240,7 +2240,7 @@ class Logging(commands.Cog):
                     "Target type must be 'channel', 'role', or 'user'.",
                 )
                 # embed.set_footer removed - CV2 doesn't support it
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             if action == "add":
@@ -2300,7 +2300,7 @@ class Logging(commands.Cog):
                     "Invalid Category", f"Valid categories: {', '.join(LOG_CATEGORIES)}"
                 )
                 # embed.set_footer removed - CV2 doesn't support it
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             categories_to_test = (
@@ -2363,7 +2363,7 @@ class Logging(commands.Cog):
                     "Invalid Range", "Days must be between 1 and 30."
                 )
                 # embed.set_footer removed - CV2 doesn't support it
-                await ctx.send(view=embed, ephemeral=True)
+                await ctx.send(view=embed)
                 return
 
             await ctx.defer()

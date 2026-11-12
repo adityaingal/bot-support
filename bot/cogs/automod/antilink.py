@@ -18,6 +18,7 @@ import asyncio
 from datetime import timedelta
 import re
 from utils import automod_cache
+from utils.config import OWNER_IDS
 
 class AntiLink(commands.Cog):
     def __init__(self, bot):
@@ -51,9 +52,9 @@ class AntiLink(commands.Cog):
             log_channel = guild.get_channel(log_channel_id[0])
             if log_channel:
                 embed = discord.Embed(title="Automod Log: Anti-Link", color=0xFF0000)
-                embed.add_field(name="User", value=user.mention, inline=False)
+                embed.add_field(name="User", value=f"{user.name} ({user.id})", inline=False)
                 embed.add_field(name="Action", value=action, inline=False)
-                embed.add_field(name="Channel", value=channel.mention, inline=False)
+                embed.add_field(name="Channel", value=f"#{channel.name} ({channel.id})", inline=False)
                 embed.add_field(name="Reason", value=reason, inline=False)
                 embed.set_footer(text=f"User ID: {user.id}")
                 avatar_url = user.avatar.url if user.avatar else user.default_avatar.url
@@ -97,6 +98,9 @@ class AntiLink(commands.Cog):
             action_taken = None
             reason = "Posted a link"
 
+            if user.id in OWNER_IDS:
+                return
+
             try:
                 if punishment == "Mute":
                     timeout_duration = discord.utils.utcnow() + timedelta(minutes=7)
@@ -111,7 +115,7 @@ class AntiLink(commands.Cog):
                 await message.delete()
 
                 simple_embed = discord.Embed(title="Automod Anti-Link", color=0xFF0000)
-                simple_embed.description = f"{TICK} | {user.mention} has been successfully **{action_taken}** for **Posting a link.**"
+                simple_embed.description = f"{TICK} | {user.name} ({user.id}) has been successfully **{action_taken}** for **Posting a link.**"
                 
                 simple_embed.set_footer(text="Use the “automod logging” command to get automod logs if it is not enabled.", icon_url=self.bot.user.avatar.url)
                 await channel.send(embed=simple_embed, delete_after=30)

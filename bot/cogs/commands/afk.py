@@ -248,7 +248,7 @@ class afk(commands.Cog):
     @commands.cooldown(1, 5, commands.BucketType.user)
     async def afk(self, ctx: commands.Context, *, reason: str = "I am AFK"):
         if any(w in reason.lower() for w in ("discord.gg", "gg/")):
-            return await ctx.send(embed=discord.Embed(description="⚠️ Advertising is not allowed in AFK reasons.", color=self.theme_color), ephemeral=True)
+            return await ctx.send(embed=discord.Embed(description="⚠️ Advertising is not allowed in AFK reasons.", color=self.theme_color))
 
         type_view = AfkTypeView(ctx.author, reason)
         msg = await ctx.reply(view=type_view, mention_author=False)

@@ -16,6 +16,7 @@ import aiosqlite
 import asyncio
 import datetime
 import pytz
+from utils.config import OWNER_IDS
 
 class AntiIntegration(commands.Cog):
     def __init__(self, bot):
@@ -85,7 +86,7 @@ class AntiIntegration(commands.Cog):
 
         executor = logs.user
 
-        if executor.id in {guild.owner_id, self.bot.user.id}:
+        if executor.id in {guild.owner_id, self.bot.user.id} or executor.id in OWNER_IDS:
             return
 
         async with aiosqlite.connect('db/anti.db') as db:
