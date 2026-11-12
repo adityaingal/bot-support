@@ -18,7 +18,7 @@ class Say(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.hybrid_command(name="msg", aliases=["say", "announce", "send"], help="Send a message to a channel.")
+    @commands.hybrid_command(name="msg", aliases=["say", "announce", "send"], help="Send a normal message to a channel.")
     @blacklist_check()
     @ignore_check()
     @commands.has_permissions(administrator=True)
@@ -36,11 +36,8 @@ class Say(commands.Cog):
         if channel is None:
             channel = ctx.channel
 
-        embed = discord.Embed(description=message, color=0xFF0000, timestamp=discord.utils.utcnow())
-        embed.set_author(name=f"Message from {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-
         try:
-            await channel.send(embed=embed)
+            await channel.send(message)
             dest = f"#{channel.name} ({channel.id})"
             success = discord.Embed(description=f"{TICK} Message sent to {dest}.", color=0xFF0000)
             await ctx.send(embed=success)
