@@ -121,7 +121,7 @@ class Rules(commands.Cog):
         except Exception as e:
             await ctx.send(f"Failed to post rules: {e}")
 
-    @rules.command(name="view", aliases=["show", "config"], help="View the current rules configuration.")
+    @rules.command(name="view", aliases=["show"], help="View the current rules configuration.")
     @blacklist_check()
     @ignore_check()
     @commands.has_permissions(administrator=True)
